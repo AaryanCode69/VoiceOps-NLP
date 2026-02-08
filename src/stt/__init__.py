@@ -1,13 +1,27 @@
 # src/stt/__init__.py
 # ====================
-# Speech-to-Text Layer — VoiceOps
+# Speech-to-Text Layer — VoiceOps (Phase 2)
 #
-# Responsibility (future phases):
-#   - Language detection before STT provider selection (per RULES.md §4)
-#   - Route to Sarvam AI STT for Hindi/Hinglish/Indian regional languages
-#   - Route to OpenAI Whisper for all other languages
-#   - Output speaker-diarized, time-aligned utterances
-#   - Label speakers as AGENT or CUSTOMER (per RULES.md §4)
+# Pipeline (per RULES.md §4):
+#   1. Detect spoken language (language_detector.py)
+#   2. Route to Sarvam AI STT (Indian) or OpenAI Whisper (non-Indian)
+#   3. Run speaker diarization (diarizer.py via pyannote.audio)
+#   4. Merge transcript with speaker labels (AGENT / CUSTOMER)
+#   5. Return raw diarized, time-aligned utterances
 #
-# Phase 0: Placeholder only. No logic implemented.
-# TODO: Implement STT provider selection and diarization in a future phase.
+# Public API:
+#   transcribe_and_diarize(audio_bytes) → list[dict]
+
+from src.stt.router import transcribe_and_diarize  # noqa: F401
+from src.stt.language_detector import (             # noqa: F401
+    TranscriptSegment,
+    LanguageDetectionResult,
+)
+from src.stt.diarizer import DiarizedUtterance      # noqa: F401
+
+__all__ = [
+    "transcribe_and_diarize",
+    "TranscriptSegment",
+    "LanguageDetectionResult",
+    "DiarizedUtterance",
+]

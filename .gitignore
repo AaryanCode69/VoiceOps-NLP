@@ -1,3 +1,7 @@
 /.vscode
 /.kiro
 /myenv
+/Data
+/extracted_audio
+.env
+/src/stt/__pycache__
