@@ -290,5 +290,3 @@ RAG must NOT:
 
 This file is a **hard constraint**.
 If generated code violates this document, it is **incorrect by design**.
-
-
