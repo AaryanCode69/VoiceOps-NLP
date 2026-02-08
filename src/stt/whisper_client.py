@@ -5,6 +5,7 @@ OpenAI Whisper STT Client — VoiceOps Phase 2
 
 Responsibility:
     - Transcribe audio using OpenAI Whisper API
+    - Translate audio to English using OpenAI Whisper Translation API
     - Return time-aligned text segments
     - Used for non-Indian languages (per RULES.md §4 STT routing)
 
@@ -71,6 +72,62 @@ def transcribe(audio_bytes: bytes) -> list[TranscriptSegment]:
 
     for seg in raw_segments:
         # Handle both dict and object attribute access patterns
+        if isinstance(seg, dict):
+            text = seg.get("text", "").strip()
+            start = float(seg.get("start", 0.0))
+            end = float(seg.get("end", 0.0))
+        else:
+            text = getattr(seg, "text", "").strip()
+            start = float(getattr(seg, "start", 0.0))
+            end = float(getattr(seg, "end", 0.0))
+
+        if text:
+            segments.append(
+                TranscriptSegment(text=text, start_time=start, end_time=end)
+            )
+
+    return segments
+
+
+def translate(audio_bytes: bytes) -> list[TranscriptSegment]:
+    """
+    Translate audio to English using OpenAI Whisper Translation API.
+
+    Whisper's /audio/translations endpoint translates any spoken language
+    to English text while preserving segment-level timestamps.
+    If the source is already English, it effectively acts as transcription.
+
+    Args:
+        audio_bytes: Normalized audio (mono 16 kHz WAV bytes).
+
+    Returns:
+        List of TranscriptSegment with English text and time boundaries.
+
+    Raises:
+        RuntimeError: If the Whisper API call fails.
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY environment variable is not set.")
+
+    client = OpenAI(api_key=api_key)
+
+    try:
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = "audio.wav"
+
+        response = client.audio.translations.create(
+            model="whisper-1",
+            file=audio_file,
+            response_format="verbose_json",
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Whisper translation failed: {exc}") from exc
+
+    segments: list[TranscriptSegment] = []
+    raw_segments = getattr(response, "segments", None) or []
+
+    for seg in raw_segments:
         if isinstance(seg, dict):
             text = seg.get("text", "").strip()
             start = float(seg.get("start", 0.0))

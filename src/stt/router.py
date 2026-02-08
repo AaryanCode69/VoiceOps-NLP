@@ -40,6 +40,7 @@ from src.stt.language_detector import (
     TranscriptSegment,
 )
 from src.stt import sarvam_client
+from src.stt import whisper_client
 from src.stt.diarizer import diarize_and_merge, DiarizedUtterance
 
 logger = logging.getLogger("voiceops.stt.router")
@@ -68,7 +69,7 @@ def transcribe_and_diarize(audio_bytes: bytes) -> list[dict]:
     Returns:
         List of dicts, each with keys:
             - "speaker":    "AGENT" or "CUSTOMER"
-            - "text":       Raw transcribed text
+            - "text":       Transcribed text (always in English)
             - "start_time": float (seconds)
             - "end_time":   float (seconds)
 
@@ -88,16 +89,19 @@ def transcribe_and_diarize(audio_bytes: bytes) -> list[dict]:
     )
 
     # ------------------------------------------------------------------
-    # Step 2: Route to the correct STT provider
+    # Step 2: Route to the correct STT provider (output always English)
     # ------------------------------------------------------------------
     if lang_result.is_indian:
-        logger.info("STT provider selected: Sarvam AI (model: saaras:v2)")
-        transcript_segments = sarvam_client.transcribe(
+        logger.info("STT provider selected: Sarvam AI (model: saaras:v2) + Sarvam Translate (mayura:v1)")
+        transcript_segments = sarvam_client.transcribe_and_translate(
             audio_bytes, lang_result.language_code
         )
-    else:
-        logger.info("STT provider selected: OpenAI Whisper (model: whisper-1)")
+    elif lang_result.language_code == "en":
+        logger.info("STT provider selected: OpenAI Whisper (model: whisper-1) — English detected, reusing detection transcript")
         transcript_segments = whisper_segments
+    else:
+        logger.info("STT provider selected: OpenAI Whisper Translation (model: whisper-1) — translating %s to English", lang_result.language_name)
+        transcript_segments = whisper_client.translate(audio_bytes)
 
     logger.info("Transcript segments received: %d", len(transcript_segments))
 

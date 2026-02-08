@@ -5,6 +5,7 @@ Sarvam AI STT Client — VoiceOps Phase 2
 
 Responsibility:
     - Transcribe audio using Sarvam AI API (saaras model)
+    - Translate Indian language text to English using Sarvam Translate API
     - Return time-aligned text segments
     - Used for Hindi, Hinglish, and Indian regional languages (per RULES.md §4)
 
@@ -32,6 +33,7 @@ from src.stt.language_detector import TranscriptSegment
 
 SARVAM_API_BASE = "https://api.sarvam.ai"
 SARVAM_STT_ENDPOINT = f"{SARVAM_API_BASE}/speech-to-text"
+SARVAM_TRANSLATE_ENDPOINT = f"{SARVAM_API_BASE}/translate"
 SARVAM_MODEL = "saaras:v2"
 
 # Map ISO 639-1 to Sarvam BCP 47 language codes
@@ -114,6 +116,90 @@ def transcribe(
 
     body = resp.json()
     return _parse_response(body)
+
+
+def transcribe_and_translate(
+    audio_bytes: bytes,
+    language_code: str,
+) -> list[TranscriptSegment]:
+    """
+    Transcribe audio using Sarvam AI STT, then translate the text to English
+    using Sarvam's Translate API.
+
+    Args:
+        audio_bytes:   Normalized audio (mono 16 kHz WAV bytes).
+        language_code: ISO 639-1 language code (e.g. "hi", "ta").
+
+    Returns:
+        List of TranscriptSegment with English text and time boundaries.
+
+    Raises:
+        RuntimeError: If STT or translation fails.
+    """
+    # Step 1: Transcribe in the original language
+    segments = transcribe(audio_bytes, language_code)
+
+    if not segments:
+        return segments
+
+    # Step 2: Translate each segment's text to English
+    sarvam_lang = _LANGUAGE_CODE_MAP.get(language_code, f"{language_code}-IN")
+    translated_segments: list[TranscriptSegment] = []
+
+    for seg in segments:
+        english_text = _translate_text(seg.text, source_lang=sarvam_lang)
+        translated_segments.append(
+            TranscriptSegment(
+                text=english_text,
+                start_time=seg.start_time,
+                end_time=seg.end_time,
+            )
+        )
+
+    return translated_segments
+
+
+def _translate_text(text: str, source_lang: str) -> str:
+    """
+    Translate a single text string from an Indian language to English
+    using the Sarvam Translate API.
+
+    Args:
+        text:        Text in the source Indian language.
+        source_lang: Sarvam BCP 47 language code (e.g. "hi-IN").
+
+    Returns:
+        Translated English text. Falls back to original text on failure.
+    """
+    api_key = os.environ.get("SARVAM_API_KEY")
+    if not api_key:
+        return text  # Fallback: return original if no key
+
+    headers = {
+        "api-subscription-key": api_key,
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "input": text,
+        "source_language_code": source_lang,
+        "target_language_code": "en-IN",
+        "model": "mayura:v1",
+        "enable_preprocessing": True,
+    }
+
+    try:
+        resp = requests.post(
+            SARVAM_TRANSLATE_ENDPOINT,
+            headers=headers,
+            json=payload,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        return body.get("translated_text", text)
+    except requests.RequestException:
+        return text  # Fallback: return original on error
 
 
 # ---------------------------------------------------------------------------
