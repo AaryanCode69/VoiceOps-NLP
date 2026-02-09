@@ -23,7 +23,7 @@ src/
 
 ## Current Phase
 
-**Phase 6** — Intent detection, obligation strength, and contradiction detection.
+**Phase 8** — RAG summary generation.
 
 ### What Phase 1 implements
 
@@ -146,6 +146,74 @@ After Phase 4 processing, the utterance list satisfies the following invariants:
 }
 ```
 
+### What Phase 7 implements
+
+| File | Purpose |
+|---|---|
+| `src/risk/signals.py` | Defines typed signal structures for all risk inputs; validates and bundles upstream outputs (sentiment, intent, obligation, contradictions, audio trust) |
+| `src/risk/scorer.py` | Deterministic weighted risk scorer — computes risk score (0–100), fraud likelihood, confidence, and key contributing risk factors |
+
+### Phase 7 — Risk Scoring Philosophy
+
+- **Multi-signal aggregation** — Risk is computed from six independent signal dimensions: sentiment, intent, conditionality, obligation strength, contradictions, and audio trust. No single factor can dominate the risk score alone.
+- **Deterministic** — No LLMs, no randomness, no probabilistic sampling. Same inputs always produce identical outputs.
+- **Transparent weighting** — Each signal dimension has a configurable weight (default weights sum to 1.0). Sub-scores are computed independently in [0, 100] and combined via weighted sum.
+- **Threshold-based fraud classification** — Fraud likelihood is derived from fixed score thresholds: `high` (≥65), `medium` (≥35), `low` (<35). Thresholds are configurable.
+- **Traceable risk factors** — Each flagged risk factor maps directly to an input signal dimension that exceeded a sub-score threshold, ensuring every factor is explainable from the inputs.
+- **No downstream logic** — Phase 7 does not generate explanations, summaries, or identifiers. It does not call RAG, store data, or make business decisions.
+
+### Phase 7 — Signal Dimensions & Weights
+
+| Dimension | Weight | What it measures |
+|---|---|---|
+| Sentiment | 0.20 | Emotional risk from customer sentiment (evasive/stressed = high) |
+| Intent | 0.20 | Risk inherent in the classified intent (refusal/deflection = high) |
+| Conditionality | 0.15 | How hedged or conditional the customer's statements are |
+| Obligation | 0.15 | Strength of customer's commitment (none/conditional = high risk) |
+| Contradictions | 0.15 | Whether within-call contradictions were detected |
+| Audio trust | 0.15 | Audio quality signals (suspicious naturalness = high risk) |
+
+### Phase 7 — Output Format
+
+```json
+{
+  "risk_score": 78,
+  "fraud_likelihood": "high",
+  "confidence": 0.81,
+  "key_risk_factors": [
+    "conditional_commitment",
+    "contradictory_statements",
+    "high_emotional_stress"
+  ]
+}
+```
+
+### What Phase 8 implements
+
+| File | Purpose |
+|---|---|
+| `src/rag/summary_generator.py` | Generates a single-sentence, embedding-safe summary from Phase 6 + Phase 7 structured outputs; OpenAI with deterministic template fallback |
+
+### Phase 8 — Summary Generation for RAG
+
+- **Input:** Structured outputs only — intent label, conditionality, obligation strength, contradictions (Phase 6) and risk score, fraud likelihood, key risk factors (Phase 7)
+- **Output:** Exactly one sentence suitable for semantic embedding
+- **No raw transcript:** Summary is derived exclusively from structured signals, never from raw text
+- **OpenAI usage:** `gpt-4o-mini` with `temperature=0.0`, constrained prompt enforcing neutral language, one sentence, no new facts
+- **Deterministic fallback:** If OpenAI is unavailable or returns invalid output, a template-based summary is generated deterministically
+- **Summary constraints:** No PII, no identifiers, no numeric scores, no accusatory language, no recommendations
+- **Banned words:** "fraudster", "lied", "scam", "criminal", "guilty", "dishonest", etc. are never used
+- **Deterministic:** Same structured inputs always produce identical template-based output
+- **No downstream logic:** Phase 8 does not store data, call RAG, embed, or generate identifiers
+
+### Phase 8 — Output Format
+
+A single string:
+
+```
+"Customer expressed a request to delay repayment with conditional commitment, showing moderate conditionality and conditional commitment patterns, indicating moderate risk and warranting closer attention."
+```
+
 ### STT Routing Logic (per RULES.md §4)
 
 ```
@@ -227,6 +295,6 @@ uvicorn main:app --reload
 5. **PII redaction (mandatory)** ← Phase 4 (implemented)
 6. **Financial NLP extraction (sentiment)** ← Phase 5 (implemented)
 7. **Financial NLP extraction (intent, obligations, contradictions)** ← Phase 6 (implemented)
-8. Risk & fraud signal computation
-8. Summary generation
-9. Structured JSON output to RAG
+8. **Risk & fraud signal computation** ← Phase 7 (implemented)
+9. **Summary generation** ← Phase 8 (implemented)
+10. Structured JSON output to RAG

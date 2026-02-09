@@ -6,3 +6,6 @@
 .env
 /src/stt/__pycache__
 /src/nlp/__pycache__
+/tests/__pycache__
+/src/risk/__pycache__
+/src/rag/__pycache__
