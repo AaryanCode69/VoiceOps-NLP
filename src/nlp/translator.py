@@ -33,6 +33,8 @@ import os
 import re
 from typing import Any
 
+from src.openai_retry import chat_completions_with_retry
+
 logger = logging.getLogger("voiceops.nlp.translator")
 
 
@@ -134,7 +136,8 @@ def _batch_translate(
             f"{numbered_lines}"
         )
 
-        response = client.chat.completions.create(
+        response = chat_completions_with_retry(
+            client,
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,

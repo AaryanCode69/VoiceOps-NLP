@@ -35,13 +35,15 @@ import logging
 import os
 from typing import Any
 
+from src.openai_retry import chat_completions_with_retry
+
 logger = logging.getLogger("voiceops.nlp.role_splitter")
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_SPEAKERS = {"AGENT", "CUSTOMER", "unknown"}
+VALID_SPEAKERS = {"AGENT", "CUSTOMER"}
 
 # Maximum number of utterances to send in a single OpenAI call
 # to avoid token limits. Larger conversations are batched.
@@ -53,41 +55,75 @@ _MAX_BATCH_SIZE = 40
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT: str = (
-    "You are analyzing a financial phone call transcript. "
-    "The call is between a collection AGENT from a financial institution "
-    "and a CUSTOMER. The transcript has been split into numbered utterances "
-    "but has NO speaker labels.\n\n"
-    "Your task is to determine who is speaking in each utterance based on "
-    "semantic content and conversational patterns:\n"
-    "- AGENT: The caller from the financial institution (introduces themselves, "
-    "asks structured questions, references account/loan/payment details, "
-    "reads from scripts, states call recording notices).\n"
-    "- CUSTOMER: The called party (responds to questions, makes commitments, "
-    "expresses confusion, asks why they are being called, discusses personal "
-    "financial situation).\n"
-    "- unknown: Use this when you genuinely cannot determine the speaker "
-    "from the content alone.\n\n"
-    "RULES:\n"
-    "- Return ONLY a valid JSON array with one object per utterance.\n"
-    "- Each object MUST have exactly three keys: "
-    '"speaker", "text", "confidence".\n'
-    '- "speaker" MUST be one of: "AGENT", "CUSTOMER", "unknown".\n'
-    '- "text" MUST be the exact text from the input (do not modify it).\n'
-    '- "confidence" MUST be a float between 0.0 and 1.0 indicating how '
-    "confident you are in the speaker attribution.\n"
-    "- If confidence would be below 0.4, set speaker to \"unknown\".\n"
-    "- Do NOT infer intent, sentiment, risk, or any other analysis.\n"
-    "- Do NOT add any explanation, reasoning, or extra keys.\n"
-    "- The output array MUST have the same number of elements as the input.\n\n"
+    "You are an expert at analyzing financial phone call transcripts between "
+    "a collection AGENT from a financial institution and a CUSTOMER.\n\n"
+
+    "You will receive a raw transcript that may be a single block of text "
+    "or multiple segments. The transcript has NO speaker labels, and sentences "
+    "from both speakers may be merged together or interleaved.\n\n"
+
+    "IMPORTANT LANGUAGE RULE:\n"
+    "If the received text is NOT in English (including Hinglish or any Indian "
+    "native language), you MUST first translate the text into clear English. "
+    "After translation, perform all further analysis ONLY on the English text. "
+    "Preserve the original meaning exactly during translation.\n\n"
+
+    "YOUR TASK:\n"
+    "1. SPLIT the text into individual conversational turns.\n"
+    "   - A new turn starts ONLY when the speaker changes.\n"
+    "   - Do NOT merge turns from different speakers.\n\n"
+
+    "Use contextual clues to detect speaker changes, including but not limited to:\n"
+    " - Questioning vs answering patterns\n"
+    " - Procedural or authoritative language vs personal or reactive language\n"
+    " - Asking for details vs explaining or justifying details\n"
+    " - Addressing someone directly (sir, madam, etc.)\n"
+    " - Shifts from instructions or verification to explanations or excuses\n\n"
+
+    "2. ASSIGN each conversational turn to exactly ONE of the following speakers:\n\n"
+
+    "AGENT (financial institution representative):\n"
+    " - Asks questions about finances, income, stock, payments, or verification\n"
+    " - References loans, EMIs, accounts, dues, or deadlines\n"
+    " - Gives instructions, warnings, or procedural explanations\n"
+    " - Reads disclaimers or call-recording notices\n"
+    " - Uses formal, structured, or authoritative language\n\n"
+
+    "CUSTOMER (person being called):\n"
+    " - Answers the agent’s questions\n"
+    " - Explains their financial situation\n"
+    " - Makes promises, excuses, or denials about payments\n"
+    " - Expresses emotions (stress, frustration, defensiveness)\n"
+    " - Reacts to the agent’s statements\n"
+    " - Uses personal, emotional, or defensive language\n\n"
+
+    "3. EVERY turn MUST be assigned either AGENT or CUSTOMER.\n"
+    "   - NEVER use \"unknown\".\n"
+    "   - Use the full conversation context to make the best possible assignment.\n\n"
+
+    "STRICT OUTPUT RULES:\n"
+    "- Return ONLY a valid JSON array. No text outside JSON.\n"
+    "- Each element MUST contain EXACTLY these three keys:\n"
+    '  "speaker", "text", "confidence".\n'
+    '- "speaker" MUST be either "AGENT" or "CUSTOMER".\n'
+    '- "text" MUST contain the exact words of that turn in English. Do NOT paraphrase.\n'
+    '- "confidence" MUST be a float between 0.0 and 1.0.\n'
+    "- The output MUST cover ALL content from the input with NOTHING omitted.\n"
+    "- Do NOT infer intent, sentiment, risk, legality, or any other analysis.\n"
+    "- Do NOT add explanations, reasoning, or extra keys.\n\n"
+
     "EXAMPLE INPUT:\n"
-    "[1] This call may be recorded for quality purposes\n"
-    "[2] Hello? Who is this?\n"
-    "[3] I am calling from XYZ Bank regarding your loan\n\n"
+    "[1] Do you have employee staff? You didn't tell me, you are a shopkeeper, "
+    "you must know how much the total stock is, tell me on average how much the "
+    "stock is. It's above 4 lakh. It won't be 4 lakh, Madam, I'm not lying.\n\n"
+
     "EXAMPLE OUTPUT:\n"
-    '[{"speaker": "AGENT", "text": "This call may be recorded for quality purposes", "confidence": 0.95},\n'
-    ' {"speaker": "CUSTOMER", "text": "Hello? Who is this?", "confidence": 0.90},\n'
-    ' {"speaker": "AGENT", "text": "I am calling from XYZ Bank regarding your loan", "confidence": 0.97}]'
+    '[{"speaker": "AGENT", "text": "Do you have employee staff?", "confidence": 0.88},\n'
+    ' {"speaker": "CUSTOMER", "text": "You did not tell me, you are a shopkeeper, you must know how much the total stock is, tell me on average how much the stock is.", "confidence": 0.75},\n'
+    ' {"speaker": "AGENT", "text": "It is above 4 lakh.", "confidence": 0.80},\n'
+    ' {"speaker": "CUSTOMER", "text": "It will not be 4 lakh, madam, I am not lying.", "confidence": 0.92}]'
 )
+
 
 
 # ---------------------------------------------------------------------------
@@ -150,10 +186,10 @@ def _attribute_batch(texts: list[str]) -> list[dict[str, Any]]:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         logger.warning(
-            "OPENAI_API_KEY not set — returning all utterances as 'unknown'."
+            "OPENAI_API_KEY not set — returning all utterances as CUSTOMER."
         )
         return [
-            {"speaker": "unknown", "text": t, "confidence": 0.0}
+            {"speaker": "CUSTOMER", "text": t, "confidence": 0.0}
             for t in texts
         ]
 
@@ -172,29 +208,31 @@ def _attribute_batch(texts: list[str]) -> list[dict[str, Any]]:
             f"{numbered_lines}"
         )
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = chat_completions_with_retry(
+            client,
+            model="gpt-4.1",
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
             ],
             temperature=0.0,
-            max_tokens=4096,
+            max_tokens=8192,
         )
 
         raw_output = response.choices[0].message.content.strip()
         parsed = _parse_role_response(raw_output, texts)
 
-        if len(parsed) == len(texts):
+        if parsed:
             logger.info("OpenAI role attribution successful: %d utterances.", len(parsed))
             return parsed
         else:
             logger.warning(
-                "Role attribution count mismatch (expected %d, got %d). "
-                "Filling missing with 'unknown'.",
-                len(texts), len(parsed),
+                "Role attribution returned empty. Returning input as CUSTOMER."
             )
-            return _fill_missing(parsed, texts)
+            return [
+                {"speaker": "CUSTOMER", "text": t, "confidence": 0.5}
+                for t in texts
+            ]
 
     except Exception as exc:
         logger.warning(
@@ -202,7 +240,7 @@ def _attribute_batch(texts: list[str]) -> list[dict[str, Any]]:
             exc,
         )
         return [
-            {"speaker": "unknown", "text": t, "confidence": 0.0}
+            {"speaker": "CUSTOMER", "text": t, "confidence": 0.0}
             for t in texts
         ]
 
@@ -251,21 +289,21 @@ def _parse_role_response(
         if not isinstance(item, dict):
             continue
 
-        speaker = item.get("speaker", "unknown")
+        speaker = item.get("speaker", "CUSTOMER")
         if speaker not in VALID_SPEAKERS:
-            speaker = "unknown"
+            # Default to CUSTOMER if invalid label returned
+            speaker = "CUSTOMER"
 
-        # Use original text to prevent any LLM modification
-        text = original_texts[i] if i < len(original_texts) else item.get("text", "")
+        # Use original text from the model's split (not from original_texts,
+        # since the model may have split a single block into multiple turns)
+        text = item.get("text", "")
+        if not text and i < len(original_texts):
+            text = original_texts[i]
 
-        confidence = item.get("confidence", 0.0)
+        confidence = item.get("confidence", 0.5)
         if not isinstance(confidence, (int, float)):
-            confidence = 0.0
+            confidence = 0.5
         confidence = max(0.0, min(1.0, float(confidence)))
-
-        # If confidence is too low, force "unknown"
-        if confidence < 0.4:
-            speaker = "unknown"
 
         results.append({
             "speaker": speaker,
@@ -282,13 +320,13 @@ def _fill_missing(
 ) -> list[dict[str, Any]]:
     """
     Fill in missing utterances when the parsed result is shorter than expected.
-    Missing entries get speaker="unknown" and confidence=0.0.
+    Missing entries default to CUSTOMER with confidence=0.5.
     """
     result = list(parsed)
     for i in range(len(parsed), len(original_texts)):
         result.append({
-            "speaker": "unknown",
+            "speaker": "CUSTOMER",
             "text": original_texts[i],
-            "confidence": 0.0,
+            "confidence": 0.5,
         })
     return result

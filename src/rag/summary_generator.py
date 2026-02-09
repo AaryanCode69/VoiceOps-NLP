@@ -45,6 +45,8 @@ import logging
 import os
 from typing import Any
 
+from src.openai_retry import chat_completions_with_retry
+
 logger = logging.getLogger("voiceops.rag.summary_generator")
 
 
@@ -344,7 +346,8 @@ def _call_openai(user_message: str) -> str:
 
     client = OpenAI(api_key=api_key)
 
-    response = client.chat.completions.create(
+    response = chat_completions_with_retry(
+        client,
         model="gpt-4o-mini",
         temperature=0.0,
         max_tokens=150,

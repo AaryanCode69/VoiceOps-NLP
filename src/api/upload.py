@@ -1,20 +1,24 @@
 """
 src/api/upload.py
 ==================
-API Upload Endpoint — VoiceOps Phase 1 + Phase 2
+API Upload Endpoint — VoiceOps Full Pipeline (Phase 1 → Phase 8)
 
 Responsibility:
     - Expose POST /analyze-call
     - Accept a single audio file (.wav, .mp3, or .m4a) via multipart/form-data
     - Reject requests missing an audio file
     - Reject disallowed file types
-    - Delegate audio validation and normalization to src.audio.normalizer (Phase 1)
-    - Delegate chunked STT transcription to src.stt (Phase 2)
-    - Return timestamped transcript (no speaker labels, no analysis, no IDs)
+    - Delegate full pipeline execution to src.pipeline.run_pipeline
+    - Return the FINAL STRUCTURED JSON per RULES.md §10
 
 Per RULES.md §3:
     - No customer_id, loan_id, or call_id is accepted or generated.
     - No metadata is required.
+
+Per RULES.md §10:
+    - The final JSON is the ONLY valid endpoint response
+    - No additional keys, nested metadata, debug info, raw transcripts
+    - No identifiers (call_id, customer_id, loan_id)
 """
 
 import asyncio
@@ -25,12 +29,9 @@ from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("voiceops.api")
 
-from src.audio.normalizer import (
-    normalize,
-    AudioValidationError,
-    AudioNormalizationError,
-)
-from src.stt.router import transcribe
+from src.audio.normalizer import AudioValidationError, AudioNormalizationError
+from src.pipeline import run_pipeline
+from src.phase_validator import PhaseVerificationError
 
 
 # ---------------------------------------------------------------------------
@@ -39,8 +40,8 @@ from src.stt.router import transcribe
 
 app = FastAPI(
     title="VoiceOps",
-    description="Call-centric risk & fraud intelligence — audio ingestion endpoint.",
-    version="0.2.0",
+    description="Call-centric risk & fraud intelligence — audio analysis endpoint.",
+    version="1.0.0",
 )
 
 
@@ -52,18 +53,20 @@ app = FastAPI(
 @app.post("/analyze-call")
 async def analyze_call(audio_file: UploadFile = File(...)):
     """
-    Accept an audio file, validate & normalize it (Phase 1), then
-    transcribe via chunked STT (Phase 2).
+    Accept an audio file and run the full VoiceOps pipeline
+    (Phase 1 → Phase 8).
+
+    Returns the FINAL STRUCTURED JSON per RULES.md §10.
 
     Args:
         audio_file: Uploaded audio file (.wav, .mp3, or .m4a).
 
     Returns:
-        JSON with timestamped transcript segments.
+        Final structured JSON with call_context, speaker_analysis,
+        nlp_insights, risk_signals, risk_assessment, summary_for_rag.
     """
 
-    # Guard: file must be provided (FastAPI enforces via File(...), but
-    # double-check for safety).
+    # Guard: file must be provided
     if audio_file is None or audio_file.filename is None:
         raise HTTPException(status_code=400, detail="Audio file is required.")
 
@@ -77,31 +80,31 @@ async def analyze_call(audio_file: UploadFile = File(...)):
 
     logger.info("File size: %.2f KB", len(audio_bytes) / 1024)
 
-    # Phase 1: Validate & normalize
-    logger.info("Phase 1: Validating and normalizing audio...")
+    # Run full pipeline (Phase 1 → Phase 8)
     try:
-        normalized_audio = normalize(audio_bytes, audio_file.filename)
+        final_output = await asyncio.to_thread(
+            run_pipeline, audio_bytes, audio_file.filename
+        )
     except AudioValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except AudioNormalizationError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-
-    # Phase 2: Chunked STT transcription (diarization-agnostic)
-    logger.info("Phase 2: Starting chunked STT transcription...")
-    try:
-        transcript = await asyncio.to_thread(
-            transcribe, normalized_audio
+    except PhaseVerificationError as exc:
+        logger.error("Phase verification failed: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Pipeline verification error in Phase {exc.phase}: {exc.message}",
         )
     except RuntimeError as exc:
-        logger.error("Phase 2 failed: %s", exc)
+        logger.error("Pipeline runtime error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+    except Exception as exc:
+        logger.error("Pipeline unexpected error: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Pipeline failed: {exc}",
+        )
 
-    logger.info("Phase 2 complete — %d transcript segment(s).", len(transcript))
+    logger.info("Full pipeline complete — returning final structured JSON.")
 
-    return JSONResponse(
-        status_code=200,
-        content={
-            "status": "transcription_complete",
-            "transcript": transcript,
-        },
-    )
+    return JSONResponse(status_code=200, content=final_output)

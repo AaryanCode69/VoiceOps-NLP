@@ -35,6 +35,8 @@ import os
 import re
 from typing import Any
 
+from src.openai_retry import chat_completions_with_retry
+
 logger = logging.getLogger("voiceops.stt.role_classifier")
 
 # ---------------------------------------------------------------------------
@@ -319,7 +321,8 @@ def _openai_classify_fallback(
             f'{{"{ speakers[0]}": "CUSTOMER", "{speakers[1]}": "AGENT"}}'
         )
 
-        response = client.chat.completions.create(
+        response = chat_completions_with_retry(
+            client,
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,

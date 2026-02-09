@@ -148,13 +148,13 @@ def _finalize_output(
         - "confidence" is a float in [0.0, 1.0]
         - No extra keys (no metadata leakage)
     """
-    valid_speakers = {"AGENT", "CUSTOMER", "unknown"}
+    valid_speakers = {"AGENT", "CUSTOMER"}
     output: list[dict[str, Any]] = []
 
     for utt in structured:
-        speaker = utt.get("speaker", "unknown")
+        speaker = utt.get("speaker", "CUSTOMER")
         if speaker not in valid_speakers:
-            speaker = "unknown"
+            speaker = "CUSTOMER"
 
         text = utt.get("text", "").strip()
         if not text:

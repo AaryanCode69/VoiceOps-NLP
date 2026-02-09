@@ -106,6 +106,7 @@ def transcribe(
     data = {
         "language_code": sarvam_lang,
         "model": SARVAM_MODEL,
+        "mode": "translate",
         "with_timestamps": "true",
     }
 

@@ -36,6 +36,8 @@ from typing import Any
 
 from openai import OpenAI
 
+from src.openai_retry import chat_completions_with_retry
+
 logger = logging.getLogger("voiceops.nlp.intent")
 
 
@@ -274,7 +276,8 @@ def classify_intent(
     # Step 3: Call OpenAI API
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-    response = client.chat.completions.create(
+    response = chat_completions_with_retry(
+        client,
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
