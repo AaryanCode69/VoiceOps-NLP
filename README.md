@@ -23,7 +23,7 @@ src/
 
 ## Current Phase
 
-**Phase 5** — Financial-context sentiment analysis.
+**Phase 6** — Intent detection, obligation strength, and contradiction detection.
 
 ### What Phase 1 implements
 
@@ -111,6 +111,41 @@ After Phase 4 processing, the utterance list satisfies the following invariants:
 }
 ```
 
+### What Phase 6 implements
+
+| File | Purpose |
+|---|---|
+| `src/nlp/intent.py` | Classifies customer intent in a financial context using OpenAI API; returns label + confidence + conditionality |
+| `src/nlp/obligation.py` | Derives obligation strength deterministically from intent label, conditionality, and linguistic markers — no LLM |
+| `src/nlp/contradictions.py` | Detects within-call contradictions in CUSTOMER speech using OpenAI API; returns boolean |
+
+### Phase 6 — Scope & Limitations
+
+- **CUSTOMER utterances only** — AGENT speech is never analyzed (per RULES.md §5)
+- **Input must be Phase 4 output** — utterances must be normalized and PII-redacted
+- **Intent labels (enum):** `repayment_promise`, `repayment_delay`, `refusal`, `deflection`, `information_seeking`, `dispute`, `unknown` — no other labels are produced
+- **Conditionality levels:** `low`, `medium`, `high`
+- **Confidence score:** 0.0–1.0 float
+- **Obligation strength:** `strong`, `weak`, `conditional`, `none` — derived deterministically from intent + conditionality + linguistic markers
+- **Contradiction detection:** binary true/false for within-call inconsistencies only; requires ≥2 CUSTOMER utterances
+- **OpenAI API required** — intent and contradiction detection use `gpt-4o-mini` with `temperature=0.0`
+- **No downstream logic** — no risk scores, fraud likelihood, summaries, explanations, or identifiers are produced
+- **No sentiment** — sentiment is handled by Phase 5; Phase 6 does not re-analyze it
+
+### Phase 6 — Output Format
+
+```json
+{
+  "intent": {
+    "label": "repayment_delay",
+    "confidence": 0.85,
+    "conditionality": "medium"
+  },
+  "obligation_strength": "conditional",
+  "contradictions_detected": false
+}
+```
+
 ### STT Routing Logic (per RULES.md §4)
 
 ```
@@ -191,7 +226,7 @@ uvicorn main:app --reload
 4. **Text cleanup & normalization** ← Phase 4 (implemented)
 5. **PII redaction (mandatory)** ← Phase 4 (implemented)
 6. **Financial NLP extraction (sentiment)** ← Phase 5 (implemented)
-7. Financial NLP extraction (intent, obligations, contradictions)
+7. **Financial NLP extraction (intent, obligations, contradictions)** ← Phase 6 (implemented)
 8. Risk & fraud signal computation
 8. Summary generation
 9. Structured JSON output to RAG
