@@ -23,7 +23,7 @@ src/
 
 ## Current Phase
 
-**Phase 2** — Speech-to-Text with language-based provider routing and speaker diarization.
+**Phase 4** — Text normalization and PII redaction.
 
 ### What Phase 1 implements
 
@@ -41,6 +41,48 @@ src/
 | `src/stt/whisper_client.py` | OpenAI Whisper API client for non-Indian language transcription |
 | `src/stt/sarvam_client.py` | Sarvam AI API client for Hindi / Hinglish / Indian regional language transcription |
 | `src/stt/diarizer.py` | Speaker diarization via pyannote.audio; merges transcript with AGENT / CUSTOMER labels |
+
+### What Phase 3 implements
+
+| File | Purpose |
+|---|---|
+| `src/stt/diarizer_validator.py` | Validates raw diarized transcript: checks speaker labels, timestamps, and text; normalizes labels to AGENT / CUSTOMER |
+| `src/stt/utterance_structurer.py` | Merges consecutive same-speaker fragments, drops artifacts, and produces clean ordered utterance list |
+
+### Phase 3 — Diarization Guarantees
+
+After Phase 3 processing, the utterance list satisfies the following invariants:
+
+- **Every utterance has a valid speaker label** — only `"AGENT"` or `"CUSTOMER"` (per RULES.md §5)
+- **Utterances are chronologically ordered** by `start_time`
+- **No empty or null text** — all text fields are non-empty after whitespace stripping
+- **No invalid timestamps** — `start_time >= 0` and `end_time > start_time` for every utterance
+- **Diarization artifacts are cleaned** — consecutive same-speaker fragments separated by ≤ 0.3s are merged; extremely short fragments with no meaningful text are dropped
+- **AGENT utterances are preserved** — no speaker's utterances are discarded
+- **Text content is NOT modified semantically** — only whitespace-trimmed and concatenated during merges
+- **No NLP, scoring, PII redaction, or identifiers** are present in the output
+
+### What Phase 4 implements
+
+| File | Purpose |
+|---|---|
+| `src/nlp/normalizer.py` | Removes filler words, normalizes spoken contractions to written form, collapses whitespace — without altering semantic meaning |
+| `src/nlp/pii_redactor.py` | Detects and redacts credit/debit cards, bank accounts, Aadhaar/SSN, OTPs, phone numbers, and emails with safe tokens |
+| `src/nlp/__init__.py` | Exposes `normalize_and_redact()` — the Phase 4 pipeline entry point (normalize → redact) |
+
+### Phase 4 — PII Safety Guarantees
+
+After Phase 4 processing, the utterance list satisfies the following invariants:
+
+- **No raw PII in output** — all detected PII is replaced with redaction tokens before any downstream use
+- **Redaction tokens used:** `<CREDIT_CARD>`, `<BANK_ACCOUNT>`, `<GOVT_ID>`, `<OTP>`, `<PHONE_NUMBER>`, `<EMAIL>`
+- **Redaction is mandatory** — per RULES.md §7, no raw PII may appear in transcripts, summaries, embeddings, or RAG inputs
+- **Text normalization preserves meaning** — only filler words (uh, um, hmm) are removed and spoken forms (gonna → going to) are expanded; no semantic distortion
+- **Speaker labels and timestamps are unchanged** — only the `text` field is modified
+- **No utterances are dropped or added** — every Phase 3 utterance passes through
+- **Output is deterministic** — same input always produces same output
+- **No external API calls** — all processing is local regex-based pattern matching
+- **No downstream logic** — no intent, sentiment, risk, scores, or identifiers are introduced
 
 ### STT Routing Logic (per RULES.md §4)
 
@@ -118,9 +160,10 @@ uvicorn main:app --reload
 
 1. **Audio normalization** ← Phase 1 (implemented)
 2. **STT + speaker diarization** ← Phase 2 (implemented)
-3. Text cleanup & normalization
-4. PII redaction (mandatory)
-5. Financial NLP extraction
-6. Risk & fraud signal computation
-7. Summary generation
-8. Structured JSON output to RAG
+3. **Diarization validation + utterance structuring** ← Phase 3 (implemented)
+4. **Text cleanup & normalization** ← Phase 4 (implemented)
+5. **PII redaction (mandatory)** ← Phase 4 (implemented)
+6. Financial NLP extraction
+7. Risk & fraud signal computation
+8. Summary generation
+9. Structured JSON output to RAG

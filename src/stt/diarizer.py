@@ -21,14 +21,28 @@ This module does NOT:
 """
 
 import io
+import logging
 import os
+import time
+import wave
 from dataclasses import dataclass
 
+import numpy as np
 from dotenv import load_dotenv
 
 from src.stt.language_detector import TranscriptSegment
 
 load_dotenv()
+
+logger = logging.getLogger("voiceops.stt.diarizer")
+
+
+# ---------------------------------------------------------------------------
+# Module-level pipeline cache (singleton — avoids reloading on every request)
+# ---------------------------------------------------------------------------
+
+_cached_pipeline = None
+_cached_device = None
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +114,10 @@ def diarize_and_merge(
     Raises:
         RuntimeError: If diarization fails.
     """
+    t0 = time.perf_counter()
     speaker_turns = _run_diarization(audio_bytes)
+    t1 = time.perf_counter()
+    logger.info("\u23f1\ufe0f  Diarization inference took %.2fs", t1 - t0)
 
     if not speaker_turns:
         # Fallback: if diarization produces no speaker turns, label all AGENT
@@ -131,52 +148,140 @@ def diarize_and_merge(
 # ---------------------------------------------------------------------------
 
 
+def _load_wav_bytes_to_tensor(audio_bytes: bytes):
+    """
+    Load normalized WAV bytes into a torch tensor using the wave module.
+
+    Avoids torchaudio.load() which depends on torchcodec/FFmpeg DLLs
+    and is extremely slow on Windows. Since Phase 1 already normalizes
+    audio to mono 16kHz WAV, we can read it directly.
+
+    Returns:
+        Tuple of (waveform: torch.Tensor [1, N], sample_rate: int)
+    """
+    import torch
+
+    buf = io.BytesIO(audio_bytes)
+    with wave.open(buf, "rb") as wf:
+        n_channels = wf.getnchannels()
+        sampwidth = wf.getsampwidth()
+        sample_rate = wf.getframerate()
+        n_frames = wf.getnframes()
+        raw = wf.readframes(n_frames)
+
+    # Map sample width to numpy dtype
+    dtype_map = {1: np.int8, 2: np.int16, 4: np.int32}
+    dtype = dtype_map.get(sampwidth, np.int16)
+    audio_np = np.frombuffer(raw, dtype=dtype).astype(np.float32)
+
+    # Normalize to [-1.0, 1.0]
+    norm_map = {1: 128.0, 2: 32768.0, 4: 2147483648.0}
+    audio_np /= norm_map.get(sampwidth, 32768.0)
+
+    # Mix to mono if needed (shouldn't be after Phase 1, but safety)
+    if n_channels > 1:
+        audio_np = audio_np.reshape(-1, n_channels).mean(axis=1)
+
+    waveform = torch.from_numpy(audio_np).unsqueeze(0)  # shape: [1, N]
+    return waveform, sample_rate
+
+
 def _run_diarization(audio_bytes: bytes) -> list[SpeakerTurn]:
     """
     Run pyannote.audio speaker-diarization pipeline on in-memory audio.
 
+    Uses GPU (CUDA) if available, falls back to CPU otherwise.
+    The pipeline is cached at module level to avoid reloading on every request.
+
     Requires:
-        - torch and torchaudio installed
-        - pyannote.audio installed
+        - torch and pyannote.audio installed
         - HF_AUTH_TOKEN environment variable set (HuggingFace model access)
 
     Returns:
         List of SpeakerTurn ordered by start_time.
     """
+    global _cached_pipeline, _cached_device
+
     try:
-        import torch          # noqa: F401
-        import torchaudio
+        import torch
         from pyannote.audio import Pipeline
     except ImportError as exc:
         raise RuntimeError(
-            "Speaker diarization requires 'torch', 'torchaudio', and "
+            "Speaker diarization requires 'torch' and "
             "'pyannote.audio'. Install them with: "
-            "pip install torch torchaudio pyannote.audio"
+            "pip install torch pyannote.audio"
         ) from exc
 
-    hf_token = os.environ.get("HF_AUTH_TOKEN")
-    if not hf_token:
-        raise RuntimeError("HF_AUTH_TOKEN environment variable is not set.")
+    # ------------------------------------------------------------------
+    # Load and cache the pipeline (first request only)
+    # ------------------------------------------------------------------
+    if _cached_pipeline is None:
+        hf_token = os.environ.get("HF_AUTH_TOKEN")
+        if not hf_token:
+            raise RuntimeError("HF_AUTH_TOKEN environment variable is not set.")
 
-    try:
-        pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            token=hf_token,
+        # Select device: GPU if available, CPU as fallback
+        if torch.cuda.is_available():
+            _cached_device = torch.device("cuda")
+            gpu_name = torch.cuda.get_device_name(0)
+            cuda_ver = torch.version.cuda or "unknown"
+            vram_mb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 2)
+            logger.info(
+                "\U0001f7e2 Diarization device: GPU (%s) | CUDA %s | VRAM: %.0f MB",
+                gpu_name, cuda_ver, vram_mb,
+            )
+        else:
+            _cached_device = torch.device("cpu")
+            logger.warning(
+                "\U0001f7e1 Diarization device: CPU (no CUDA GPU detected \u2014 this will be slow)"
+            )
+
+        t_load = time.perf_counter()
+        logger.info("Loading diarization pipeline (first request, will be cached)...")
+        try:
+            _cached_pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1",
+                token=hf_token,
+            )
+            _cached_pipeline.to(_cached_device)
+        except Exception as exc:
+            _cached_pipeline = None
+            _cached_device = None
+            raise RuntimeError(f"Failed to load diarization model: {exc}") from exc
+
+        t_load_end = time.perf_counter()
+        logger.info(
+            "\u2705 Diarization pipeline loaded and cached on %s (took %.2fs).",
+            _cached_device, t_load_end - t_load,
         )
-    except Exception as exc:
-        raise RuntimeError(f"Failed to load diarization model: {exc}") from exc
+    else:
+        device_label = (
+            f"GPU ({torch.cuda.get_device_name(0)})"
+            if _cached_device.type == "cuda"
+            else "CPU"
+        )
+        logger.info("Using cached diarization pipeline on %s.", device_label)
 
-    # Load audio from bytes into a tensor
+    # ------------------------------------------------------------------
+    # Load audio from WAV bytes using wave module (fast, no torchcodec)
+    # ------------------------------------------------------------------
+    t_audio = time.perf_counter()
     try:
-        waveform, sample_rate = torchaudio.load(io.BytesIO(audio_bytes))
+        waveform, sample_rate = _load_wav_bytes_to_tensor(audio_bytes)
     except Exception as exc:
         raise RuntimeError(
             f"Failed to decode audio for diarization: {exc}"
         ) from exc
+    t_audio_end = time.perf_counter()
+    duration_sec = waveform.shape[1] / sample_rate
+    logger.info(
+        "\u23f1\ufe0f  Audio loaded: %.1fs duration, %d Hz \u2014 decoded in %.3fs",
+        duration_sec, sample_rate, t_audio_end - t_audio,
+    )
 
     # Run the diarization pipeline
     try:
-        result = pipeline({"waveform": waveform, "sample_rate": sample_rate})
+        result = _cached_pipeline({"waveform": waveform, "sample_rate": sample_rate})
     except Exception as exc:
         raise RuntimeError(f"Diarization pipeline failed: {exc}") from exc
 
@@ -200,6 +305,7 @@ def _run_diarization(audio_bytes: bytes) -> list[SpeakerTurn]:
         )
 
     turns.sort(key=lambda t: t.start_time)
+    logger.info("Pyannote returned %d speaker turns.", len(turns))
     return turns
 
 

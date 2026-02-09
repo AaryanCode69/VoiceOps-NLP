@@ -17,12 +17,15 @@ This module does NOT:
 """
 
 import io
+import logging
 import os
 
 from dotenv import load_dotenv
 from openai import OpenAI
 
 load_dotenv()
+
+logging.getLogger("openai._base_client").setLevel(logging.WARNING)
 
 from src.stt.language_detector import TranscriptSegment
 

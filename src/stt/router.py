@@ -96,9 +96,12 @@ def transcribe_and_diarize(audio_bytes: bytes) -> list[dict]:
         transcript_segments = sarvam_client.transcribe_and_translate(
             audio_bytes, lang_result.language_code
         )
-    elif lang_result.language_code == "en":
+    elif lang_result.language_code == "en" and not lang_result.was_trimmed:
         logger.info("STT provider selected: OpenAI Whisper (model: whisper-1) — English detected, reusing detection transcript")
         transcript_segments = whisper_segments
+    elif lang_result.language_code == "en" and lang_result.was_trimmed:
+        logger.info("STT provider selected: OpenAI Whisper (model: whisper-1) — English detected, full transcription (detection used trimmed clip)")
+        transcript_segments = whisper_client.transcribe(audio_bytes)
     else:
         logger.info("STT provider selected: OpenAI Whisper Translation (model: whisper-1) — translating %s to English", lang_result.language_name)
         transcript_segments = whisper_client.translate(audio_bytes)

@@ -17,13 +17,24 @@ This module does NOT:
 """
 
 import io
+import logging
 import os
+import wave
 from dataclasses import dataclass
 
+import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
 
 load_dotenv()
+
+logger = logging.getLogger("voiceops.stt.language_detector")
+logging.getLogger("openai._base_client").setLevel(logging.WARNING)
+
+# If audio is >= this duration, only send the first DETECTION_CLIP_SECONDS
+# to Whisper for language detection (saves time and cost).
+DETECTION_THRESHOLD_SECONDS = 60
+DETECTION_CLIP_SECONDS = 30
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +83,7 @@ class LanguageDetectionResult:
     language_code: str  # ISO 639-1 (e.g. "hi", "en")
     language_name: str  # Human-readable (e.g. "Hindi", "English")
     is_indian: bool     # True → route to Sarvam; False → route to Whisper
+    was_trimmed: bool = False  # True if only a clip was used for detection
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +136,11 @@ def detect_language_with_transcript(
 
     client = OpenAI(api_key=api_key)
 
+    # ---- Trim long audio to first N seconds for faster detection ----
+    detection_bytes, was_trimmed = _maybe_trim_for_detection(audio_bytes)
+
     try:
-        audio_file = io.BytesIO(audio_bytes)
+        audio_file = io.BytesIO(detection_bytes)
         audio_file.name = "audio.wav"
 
         response = client.audio.transcriptions.create(
@@ -165,7 +180,19 @@ def detect_language_with_transcript(
         language_code=language_code,
         language_name=language_name,
         is_indian=is_indian,
+        was_trimmed=was_trimmed,
     )
+
+    if was_trimmed:
+        logger.info(
+            "Language detected from %ds clip: %s (%s)",
+            DETECTION_CLIP_SECONDS, language_name, language_code,
+        )
+    else:
+        logger.info(
+            "Language detected from full audio: %s (%s)",
+            language_name, language_code,
+        )
 
     return lang_result, segments
 
@@ -173,6 +200,50 @@ def detect_language_with_transcript(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _maybe_trim_for_detection(audio_bytes: bytes) -> tuple[bytes, bool]:
+    """
+    If the audio is >= DETECTION_THRESHOLD_SECONDS, return only the first
+    DETECTION_CLIP_SECONDS as WAV bytes. Otherwise return the original bytes.
+
+    Returns:
+        Tuple of (possibly-trimmed WAV bytes, was_trimmed: bool).
+    """
+    buf = io.BytesIO(audio_bytes)
+    try:
+        with wave.open(buf, "rb") as wf:
+            sample_rate = wf.getframerate()
+            n_frames = wf.getnframes()
+            n_channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            duration = n_frames / sample_rate
+    except Exception:
+        # If we can't read the WAV header, just send the full bytes
+        return audio_bytes, False
+
+    if duration < DETECTION_THRESHOLD_SECONDS:
+        return audio_bytes, False
+
+    # Trim to first DETECTION_CLIP_SECONDS
+    clip_frames = int(DETECTION_CLIP_SECONDS * sample_rate)
+    buf.seek(0)
+    with wave.open(buf, "rb") as wf:
+        raw_frames = wf.readframes(clip_frames)
+
+    # Write trimmed WAV
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wf_out:
+        wf_out.setnchannels(n_channels)
+        wf_out.setsampwidth(sampwidth)
+        wf_out.setframerate(sample_rate)
+        wf_out.writeframes(raw_frames)
+
+    logger.info(
+        "Audio is %.0fs — trimmed to first %ds for language detection.",
+        duration, DETECTION_CLIP_SECONDS,
+    )
+    return out.getvalue(), True
+
 
 _LANGUAGE_NAMES: dict[str, str] = {
     "en": "English",

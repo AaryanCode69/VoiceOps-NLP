@@ -5,3 +5,4 @@
 /extracted_audio
 .env
 /src/stt/__pycache__
+/src/nlp/__pycache__
