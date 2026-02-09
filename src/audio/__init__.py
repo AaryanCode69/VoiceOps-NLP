@@ -4,7 +4,7 @@
 #
 # Responsibility (future phases):
 #   - Audio normalization (pipeline step 1, per RULES.md §6)
-#   - Format validation (wav / mp3)
+#   - Format validation (wav / mp3 / m4a)
 #   - Prepare audio for downstream STT processing
 #
 # Phase 0: Placeholder only. No logic implemented.

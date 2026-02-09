@@ -1,47 +1,93 @@
 """
 src/stt/diarizer_validator.py
 ==============================
-Diarization Validator — VoiceOps Phase 3
+Speaker Diarization & Alignment — VoiceOps Phase 3 (PyAnnote)
 
 Responsibility:
-    - Validate raw diarized transcript output from Phase 2
-    - Ensure every utterance has a valid speaker label, timestamps, and text
-    - Normalize speaker labels strictly to AGENT or CUSTOMER
-    - Reject malformed utterances (missing fields, empty text, bad timestamps)
+    - Accept timestamped transcript from Phase 2 (Deepgram STT, no speaker labels)
+    - Accept raw audio bytes (original file)
+    - Run PyAnnote speaker diarization on the RAW AUDIO (CUDA-enabled)
+    - Align PyAnnote speaker segments with Deepgram transcript timestamps
+    - Output utterances labeled as speaker_A / speaker_B with timestamps
+
+Per updated Phase 3 spec:
+    - PyAnnote MUST be used for speaker segmentation
+    - CUDA MUST be enabled (GPU if available)
+    - Diarization is AUDIO-based, not text-based
+    - Deepgram diarization is NOT used
+    - Output is speaker_A / speaker_B (role classification is separate)
 
 Per RULES.md §5:
-    - Only AGENT and CUSTOMER labels are permitted
-    - Both speakers are preserved (AGENT speech is not discarded)
+    - Only two logical speakers: AGENT and CUSTOMER
+    - Role assignment happens in role_classifier.py (downstream)
 
 This module does NOT:
-    - Perform STT, language detection, or text normalization
+    - Perform STT (handled by Phase 2)
+    - Assign AGENT / CUSTOMER roles (handled by role_classifier.py)
+    - Translate text (handled by translator.py)
     - Perform PII redaction
     - Perform intent, sentiment, obligation, or risk analysis
-    - Call any LLM or external API
     - Generate summaries, scores, or identifiers
-    - Store data
+    - Store data or call RAG
 """
 
+import io
 import logging
+import os
+import wave
 from typing import Any
+
+import torch
 
 logger = logging.getLogger("voiceops.stt.diarizer_validator")
 
 # ---------------------------------------------------------------------------
-# Constants
+# PyAnnote pipeline (lazy-loaded singleton)
 # ---------------------------------------------------------------------------
 
-VALID_SPEAKERS = {"AGENT", "CUSTOMER"}
+_pyannote_pipeline = None
 
-# Known raw speaker label aliases that can be safely mapped
-_SPEAKER_ALIAS_MAP: dict[str, str] = {
-    "agent": "AGENT",
-    "AGENT": "AGENT",
-    "Agent": "AGENT",
-    "customer": "CUSTOMER",
-    "CUSTOMER": "CUSTOMER",
-    "Customer": "CUSTOMER",
-}
+
+def _get_pyannote_pipeline():
+    """
+    Lazily load the PyAnnote speaker diarization pipeline.
+
+    Uses CUDA if available, otherwise falls back to CPU.
+    Requires a HuggingFace token set as HUGGINGFACE_TOKEN env var.
+    """
+    global _pyannote_pipeline
+
+    if _pyannote_pipeline is not None:
+        return _pyannote_pipeline
+
+    from pyannote.audio import Pipeline
+
+    hf_token = os.environ.get("HUGGINGFACE_TOKEN") or os.environ.get("HF_TOKEN")
+    if not hf_token:
+        raise RuntimeError(
+            "HUGGINGFACE_TOKEN (or HF_TOKEN) environment variable is required "
+            "for PyAnnote speaker diarization. Get a token from "
+            "https://huggingface.co/settings/tokens and accept the model "
+            "license at https://huggingface.co/pyannote/speaker-diarization-3.1"
+        )
+
+    logger.info("Loading PyAnnote speaker-diarization-3.1 pipeline...")
+
+    _pyannote_pipeline = Pipeline.from_pretrained(
+        "pyannote/speaker-diarization-3.1",
+        use_auth_token=hf_token,
+    )
+
+    # Use CUDA if available, else CPU
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    _pyannote_pipeline = _pyannote_pipeline.to(device)
+
+    logger.info(
+        "PyAnnote pipeline loaded on device: %s (CUDA available: %s)",
+        device, torch.cuda.is_available(),
+    )
+
+    return _pyannote_pipeline
 
 
 # ---------------------------------------------------------------------------
@@ -49,82 +95,168 @@ _SPEAKER_ALIAS_MAP: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
-def validate_diarized_transcript(
-    raw_utterances: list[dict[str, Any]],
-    *,
-    strict: bool = False,
-) -> list[dict[str, Any]]:
+def diarize_audio(audio_bytes: bytes) -> list[dict[str, Any]]:
     """
-    Validate and normalize a raw diarized transcript from Phase 2.
+    Run PyAnnote speaker diarization on raw audio bytes.
 
-    Each utterance dict is expected to have:
-        - "speaker":    str   → must resolve to AGENT or CUSTOMER
-        - "text":       str   → must be non-empty after stripping whitespace
-        - "start_time": float → must be >= 0
-        - "end_time":   float → must be > start_time
-
-    Utterances that fail validation are logged and dropped (default) or
-    cause a ``ValueError`` if *strict* mode is enabled.
+    Uses the PyAnnote speaker-diarization-3.1 model on GPU (CUDA)
+    when available.
 
     Args:
-        raw_utterances: List of dicts from Phase 2 diarizer output.
-        strict:         If True, raise on the first invalid utterance
-                        instead of dropping it silently.
+        audio_bytes: Normalized audio from Phase 1 (mono 16 kHz WAV bytes).
 
     Returns:
-        List of validated utterance dicts with normalized speaker labels.
+        List of speaker segment dicts:
+            [{"speaker": "speaker_A", "start_time": float, "end_time": float}, ...]
 
     Raises:
-        TypeError:  If *raw_utterances* is not a list.
-        ValueError: If *strict* is True and an invalid utterance is found.
+        RuntimeError: If PyAnnote pipeline cannot be loaded.
     """
-    if not isinstance(raw_utterances, list):
-        raise TypeError(
-            f"Expected list of utterance dicts, got {type(raw_utterances).__name__}"
-        )
+    pipeline = _get_pyannote_pipeline()
 
-    if not raw_utterances:
-        logger.warning("Received empty utterance list — nothing to validate.")
-        return []
+    # PyAnnote expects a dict with "waveform" and "sample_rate", or a file path.
+    # We'll provide an in-memory waveform tensor.
+    waveform, sample_rate = _wav_bytes_to_tensor(audio_bytes)
 
-    validated: list[dict[str, Any]] = []
+    logger.info(
+        "Running PyAnnote diarization on %.1fs of audio (sample_rate=%d)...",
+        waveform.shape[1] / sample_rate, sample_rate,
+    )
 
-    for idx, utt in enumerate(raw_utterances):
-        issues = _validate_single_utterance(utt, idx)
+    # Run diarization
+    diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate})
 
-        if issues:
-            msg = (
-                f"Utterance [{idx}] validation failed: "
-                + "; ".join(issues)
-                + f" — raw value: {utt!r}"
-            )
-            if strict:
-                raise ValueError(msg)
-            logger.warning(msg)
-            continue
-
-        # Normalize speaker label
-        normalized_speaker = _normalize_speaker_label(utt["speaker"])
-
-        validated.append({
-            "speaker": normalized_speaker,
-            "text": utt["text"].strip(),
-            "start_time": float(utt["start_time"]),
-            "end_time": float(utt["end_time"]),
+    # Convert PyAnnote output to our segment format
+    # PyAnnote yields (segment, track, speaker_label)
+    raw_segments: list[dict[str, Any]] = []
+    for segment, _track, speaker_label in diarization.itertracks(yield_label=True):
+        raw_segments.append({
+            "speaker": speaker_label,
+            "start_time": round(segment.start, 3),
+            "end_time": round(segment.end, 3),
         })
 
-    dropped = len(raw_utterances) - len(validated)
-    if dropped > 0:
-        logger.info(
-            "Validation complete: %d/%d utterances kept (%d dropped).",
-            len(validated), len(raw_utterances), dropped,
-        )
-    else:
-        logger.info(
-            "Validation complete: all %d utterances passed.", len(validated),
-        )
+    # Normalize PyAnnote speaker labels to speaker_A / speaker_B
+    # PyAnnote uses labels like "SPEAKER_00", "SPEAKER_01", etc.
+    speaker_label_map = _build_speaker_label_map(raw_segments)
+    segments = []
+    for seg in raw_segments:
+        segments.append({
+            "speaker": speaker_label_map.get(seg["speaker"], "speaker_A"),
+            "start_time": seg["start_time"],
+            "end_time": seg["end_time"],
+        })
 
-    return validated
+    logger.info(
+        "PyAnnote diarization complete: %d segments, %d unique speakers.",
+        len(segments), len(speaker_label_map),
+    )
+
+    return segments
+
+
+def align_transcript_with_speakers(
+    transcript: list[dict[str, Any]],
+    speaker_segments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Align Deepgram transcript timestamps with PyAnnote speaker segments.
+
+    For each transcript segment, find the PyAnnote speaker segment with the
+    greatest time overlap and assign that speaker label.
+
+    Args:
+        transcript: Phase 2 output — list of dicts with keys:
+            chunk_id, start_time, end_time, text.
+        speaker_segments: PyAnnote output — list of dicts with keys:
+            speaker (speaker_A/speaker_B), start_time, end_time.
+
+    Returns:
+        List of aligned utterance dicts:
+            [{"speaker": "speaker_A"|"speaker_B", "text": str,
+              "start_time": float, "end_time": float}]
+    """
+    if not transcript:
+        logger.warning("Empty transcript — nothing to align.")
+        return []
+
+    if not speaker_segments:
+        logger.warning(
+            "No speaker segments from PyAnnote — assigning all to speaker_A."
+        )
+        return [
+            {
+                "speaker": "speaker_A",
+                "text": seg["text"].strip(),
+                "start_time": float(seg["start_time"]),
+                "end_time": float(seg["end_time"]),
+            }
+            for seg in transcript
+            if seg.get("text", "").strip()
+        ]
+
+    aligned: list[dict[str, Any]] = []
+
+    for seg in transcript:
+        text = seg.get("text", "").strip()
+        if not text:
+            continue
+
+        seg_start = float(seg["start_time"])
+        seg_end = float(seg["end_time"])
+
+        # Find the speaker segment with maximum overlap
+        best_speaker = "speaker_A"
+        best_overlap = 0.0
+
+        for spk_seg in speaker_segments:
+            overlap_start = max(seg_start, spk_seg["start_time"])
+            overlap_end = min(seg_end, spk_seg["end_time"])
+            overlap = max(0.0, overlap_end - overlap_start)
+
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_speaker = spk_seg["speaker"]
+
+        aligned.append({
+            "speaker": best_speaker,
+            "text": text,
+            "start_time": seg_start,
+            "end_time": seg_end,
+        })
+
+    logger.info(
+        "Alignment complete: %d transcript segments aligned with speaker labels.",
+        len(aligned),
+    )
+
+    return aligned
+
+
+def diarize_and_align(
+    audio_bytes: bytes,
+    transcript: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Full Phase 3 Step 1–3: Diarize audio with PyAnnote, then align with
+    Deepgram transcript.
+
+    This is the primary entry point for Phase 3 diarization.
+
+    Args:
+        audio_bytes: Raw audio bytes (mono 16 kHz WAV from Phase 1).
+        transcript: Phase 2 output (timestamped text, no speaker labels).
+
+    Returns:
+        List of speaker-labeled utterance dicts with speaker_A/speaker_B.
+    """
+    # Step 1: PyAnnote speaker segmentation on raw audio
+    speaker_segments = diarize_audio(audio_bytes)
+
+    # Step 2: Align transcript timestamps with speaker segments
+    aligned_utterances = align_transcript_with_speakers(transcript, speaker_segments)
+
+    return aligned_utterances
 
 
 # ---------------------------------------------------------------------------
@@ -132,82 +264,69 @@ def validate_diarized_transcript(
 # ---------------------------------------------------------------------------
 
 
-def _validate_single_utterance(utt: Any, idx: int) -> list[str]:
+def _wav_bytes_to_tensor(audio_bytes: bytes) -> tuple:
     """
-    Check a single utterance dict for structural issues.
+    Convert WAV bytes to a PyTorch tensor suitable for PyAnnote.
 
-    Returns a list of human-readable issue strings (empty = valid).
+    Returns:
+        Tuple of (waveform_tensor, sample_rate) where waveform_tensor
+        has shape (1, num_samples) — mono channel.
     """
-    issues: list[str] = []
+    buf = io.BytesIO(audio_bytes)
+    with wave.open(buf, "rb") as wf:
+        n_channels = wf.getnchannels()
+        sample_width = wf.getsampwidth()
+        sample_rate = wf.getframerate()
+        n_frames = wf.getnframes()
+        raw_data = wf.readframes(n_frames)
 
-    if not isinstance(utt, dict):
-        issues.append(f"expected dict, got {type(utt).__name__}")
-        return issues  # cannot check further
+    import numpy as np
 
-    # --- speaker ---
-    speaker = utt.get("speaker")
-    if speaker is None:
-        issues.append("missing 'speaker' key")
-    elif not isinstance(speaker, str):
-        issues.append(f"'speaker' must be str, got {type(speaker).__name__}")
-    elif _normalize_speaker_label(speaker) is None:
-        issues.append(
-            f"unrecognized speaker label '{speaker}' "
-            f"(expected AGENT or CUSTOMER)"
-        )
+    # Convert raw bytes to numpy array
+    if sample_width == 2:
+        dtype = np.int16
+    elif sample_width == 4:
+        dtype = np.int32
+    else:
+        dtype = np.int16
 
-    # --- text ---
-    text = utt.get("text")
-    if text is None:
-        issues.append("missing 'text' key")
-    elif not isinstance(text, str):
-        issues.append(f"'text' must be str, got {type(text).__name__}")
-    elif not text.strip():
-        issues.append("'text' is empty or whitespace-only")
+    audio_np = np.frombuffer(raw_data, dtype=dtype).astype(np.float32)
 
-    # --- start_time ---
-    start = utt.get("start_time")
-    if start is None:
-        issues.append("missing 'start_time' key")
-    elif not isinstance(start, (int, float)):
-        issues.append(f"'start_time' must be numeric, got {type(start).__name__}")
-    elif start < 0:
-        issues.append(f"'start_time' is negative ({start})")
+    # If stereo, take first channel
+    if n_channels > 1:
+        audio_np = audio_np[::n_channels]
 
-    # --- end_time ---
-    end = utt.get("end_time")
-    if end is None:
-        issues.append("missing 'end_time' key")
-    elif not isinstance(end, (int, float)):
-        issues.append(f"'end_time' must be numeric, got {type(end).__name__}")
-    elif isinstance(start, (int, float)) and start >= 0:
-        if end <= start:
-            issues.append(
-                f"'end_time' ({end}) must be greater than 'start_time' ({start})"
-            )
+    # Normalize to [-1.0, 1.0]
+    max_val = float(np.iinfo(dtype).max)
+    audio_np = audio_np / max_val
 
-    return issues
+    # Convert to torch tensor with shape (1, num_samples)
+    waveform = torch.from_numpy(audio_np).unsqueeze(0)
+
+    return waveform, sample_rate
 
 
-def _normalize_speaker_label(raw_label: str) -> str | None:
+def _build_speaker_label_map(
+    raw_segments: list[dict[str, Any]],
+) -> dict[str, str]:
     """
-    Map a raw speaker label to a canonical AGENT or CUSTOMER label.
+    Map PyAnnote raw speaker labels (e.g. SPEAKER_00, SPEAKER_01)
+    to normalized speaker_A / speaker_B labels.
 
-    Returns None if the label cannot be mapped.
+    The speaker who appears first chronologically becomes speaker_A.
     """
-    if not isinstance(raw_label, str):
-        return None
+    label_map: dict[str, str] = {}
+    label_counter = 0
+    suffixes = ["A", "B", "C", "D", "E"]  # Support up to 5 speakers
 
-    # Direct alias lookup (covers common casing variants)
-    mapped = _SPEAKER_ALIAS_MAP.get(raw_label)
-    if mapped is not None:
-        return mapped
+    for seg in sorted(raw_segments, key=lambda s: s["start_time"]):
+        raw_label = seg["speaker"]
+        if raw_label not in label_map:
+            if label_counter < len(suffixes):
+                label_map[raw_label] = f"speaker_{suffixes[label_counter]}"
+            else:
+                label_map[raw_label] = f"speaker_{label_counter}"
+            label_counter += 1
 
-    # Case-insensitive fallback
-    lowered = raw_label.strip().lower()
-    if lowered == "agent":
-        return "AGENT"
-    if lowered == "customer":
-        return "CUSTOMER"
-
-    return None
+    logger.debug("PyAnnote label map: %s", label_map)
+    return label_map

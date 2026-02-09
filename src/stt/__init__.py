@@ -1,41 +1,31 @@
 # src/stt/__init__.py
 # ====================
-# Speech-to-Text Layer — VoiceOps (Phase 2 + Phase 3)
+# Speech-to-Text Layer — VoiceOps (Phase 2 ONLY)
 #
-# Pipeline (per RULES.md §4):
-#   1. Detect spoken language (language_detector.py)
-#   2. Route to Sarvam AI STT (Indian) or OpenAI Whisper (non-Indian)
-#   3. Run speaker diarization (diarizer.py via pyannote.audio)
-#   4. Merge transcript with speaker labels (AGENT / CUSTOMER)
-#   5. Return raw diarized, time-aligned utterances
+# Phase 2 Pipeline (diarization-agnostic, no Whisper):
+#   1. Detect call language via Deepgram
+#   2. Chunk audio into 20–30 s segments with overlap
+#   3. Route to Sarvam AI (Indian) or Deepgram Nova-3 (other)
+#   4. Transcribe chunks in parallel (diarize=False)
+#   5. Flatten, deduplicate overlap, adjust timestamps
+#   6. Return timestamped transcript (text + times only)
 #
-# Phase 3 (diarization validation & structuring):
-#   6. Validate diarization output (diarizer_validator.py)
-#   7. Clean artifacts and structure utterances (utterance_structurer.py)
+# Phase 3 (semantic structuring) is handled entirely by src/nlp/:
+#   - src/nlp/semantic_structurer.py (orchestrator)
+#   - src/nlp/translator.py (translation)
+#   - src/nlp/role_splitter.py (role attribution)
 #
 # Public API:
-#   transcribe_and_diarize(audio_bytes) → list[dict]
-#   validate_diarized_transcript(raw_utterances) → list[dict]
-#   structure_utterances(validated_utterances) → list[dict]
+#   transcribe(audio_bytes) → list[dict]
 
-from src.stt.router import transcribe_and_diarize  # noqa: F401
+from src.stt.router import transcribe  # noqa: F401
 from src.stt.language_detector import (             # noqa: F401
     TranscriptSegment,
     LanguageDetectionResult,
 )
-from src.stt.diarizer import DiarizedUtterance      # noqa: F401
-from src.stt.diarizer_validator import (            # noqa: F401
-    validate_diarized_transcript,
-)
-from src.stt.utterance_structurer import (          # noqa: F401
-    structure_utterances,
-)
 
 __all__ = [
-    "transcribe_and_diarize",
+    "transcribe",
     "TranscriptSegment",
     "LanguageDetectionResult",
-    "DiarizedUtterance",
-    "validate_diarized_transcript",
-    "structure_utterances",
 ]

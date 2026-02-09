@@ -142,15 +142,28 @@ def normalize_utterances(
     """
     Normalize text in a list of structured utterances from Phase 3.
 
-    Each utterance dict must have keys: speaker, text, start_time, end_time.
-    Only the ``text`` field is modified. Speaker labels and timestamps are
-    passed through unchanged. No utterances are added or dropped.
+    Phase 3 output format (updated):
+        - speaker:         AGENT or CUSTOMER
+        - original_text:   original transcribed text
+        - translated_text: English translation (CUSTOMER only, None for AGENT)
+        - start_time:      float
+        - end_time:        float
+
+    This function bridges Phase 3 → Phase 4 by:
+        - For CUSTOMER: using translated_text (falling back to original_text)
+        - For AGENT: using original_text
+        - Outputting a single normalized ``text`` field for downstream phases
+
+    Also supports legacy format with a ``text`` key for backward compatibility.
+
+    Speaker labels and timestamps are passed through unchanged.
+    No utterances are added or dropped.
 
     Args:
         utterances: Phase 3 output — list of utterance dicts.
 
     Returns:
-        New list of utterance dicts with normalized text.
+        New list of utterance dicts with a normalized ``text`` field.
     """
     if not utterances:
         logger.warning("Received empty utterance list — nothing to normalize.")
@@ -158,9 +171,12 @@ def normalize_utterances(
 
     normalized: list[dict[str, Any]] = []
     for utt in utterances:
+        # Bridge Phase 3 output format: choose the right text field
+        raw_text = _extract_text(utt)
+
         normalized.append({
             "speaker": utt["speaker"],
-            "text": normalize_text(utt["text"]),
+            "text": normalize_text(raw_text),
             "start_time": utt["start_time"],
             "end_time": utt["end_time"],
         })
@@ -169,3 +185,24 @@ def normalize_utterances(
         "Text normalization complete for %d utterances.", len(normalized)
     )
     return normalized
+
+
+def _extract_text(utt: dict[str, Any]) -> str:
+    """
+    Extract the appropriate text from an utterance dict.
+
+    Supports both Phase 3 updated format (original_text / translated_text)
+    and legacy format (text key).
+
+    For CUSTOMER: use translated_text if available, else original_text.
+    For AGENT: use original_text.
+    Fallback: use 'text' key (legacy compatibility).
+    """
+    # New Phase 3 format
+    if "original_text" in utt:
+        if utt["speaker"] == "CUSTOMER":
+            return utt.get("translated_text") or utt["original_text"]
+        return utt["original_text"]
+
+    # Legacy format
+    return utt.get("text", "")

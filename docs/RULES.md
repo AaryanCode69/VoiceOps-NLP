@@ -1,210 +1,354 @@
-# 📘 RULES.md — VoiceOps (Call-Centric Risk & Fraud Intelligence)
+# VoiceOps — System Rules & Architectural Invariants
 
-## Purpose of This File
+## 1. Purpose of This File
 
-This document defines **non-negotiable rules** for implementing VoiceOps under the **call-level risk & fraud detection architecture**.
-All generated code **must comply** with these rules.
+This document defines the **non-negotiable architectural rules** for the VoiceOps system.
 
----
+All implementations (human or AI-assisted) **must strictly comply** with this file.
+If any code violates these rules, it is **architecturally incorrect**, even if it “works”.
 
-## 1. SYSTEM GOAL (LOCKED)
+This file is the **single source of truth** for:
 
-VoiceOps analyzes a **single financial call** in isolation to detect:
-
-* Customer intent
-* Emotional state
-* Strength of commitments
-* Risk and fraud-like behavioral patterns
-
-The system **does not** track customers over time and **does not** rely on historical identity.
+* Phase boundaries
+* Tool responsibilities
+* LLM usage
+* Output contracts
+* Compliance guarantees
 
 ---
 
-## 2. CORE DESIGN PRINCIPLES
+## 2. Core Design Principles
 
-* Call-centric, not customer-centric
-* Stateless NLP
-* Speaker-aware analysis
-* Explainable risk signals
-* Compliance-safe (PII redaction mandatory)
-* RAG used for **knowledge grounding**, not memory
+1. **Each phase has exactly one responsibility**
+2. **Acoustic problems are solved acoustically**
+3. **Semantic problems are solved semantically**
+4. **LLMs interpret; rules decide**
+5. **Risk decisions are deterministic**
+6. **No phase may leak responsibility**
+7. **All outputs must be auditable and explainable**
+8. **Speed and correctness are both first-class goals**
 
 ---
 
-## 3. INPUT CONTRACT
+## 3. High-Level Pipeline
 
-### API Input
-
-```http
-POST /analyze-call
-Content-Type: multipart/form-data
-
-audio_file = <wav | mp3>
+```
+Audio Upload
+  ↓
+Phase 1: Audio Normalization
+  ↓
+Phase 2: Speech-to-Text (STT ONLY)
+  ↓
+Phase 3: Semantic Structuring (Translation + Role Attribution)
+  ↓
+Phase 4: Text Normalization & PII Redaction
+  ↓
+Phase 5: Sentiment Analysis
+  ↓
+Phase 6: Intent, Obligation & Contradiction Detection
+  ↓
+Phase 7: Risk & Fraud Signal Engine (Deterministic)
+  ↓
+Phase 8: Summary Generation (RAG Anchor)
+  ↓
+Final Structured JSON Output
 ```
 
-### Input Rules
+---
 
-* Audio file is mandatory
-* No customer_id, loan_id, or call_id is accepted
-* No metadata is required
-* Audio may be multilingual or code-switched
+## 4. Phase Responsibilities (STRICT)
 
 ---
 
-## 4. SPEECH-TO-TEXT (STT) RULES
+### Phase 1 — Audio Upload & Normalization
 
-### STT Provider Selection Logic (MANDATORY)
+**Responsibility**
 
-```text
-If detected language ∈ {Hindi, Hinglish, Indian regional languages}
-    → Use Sarvam AI STT
-Else
-    → Use OpenAI Whisper
+* Accept audio input
+* Normalize format (mono, sample rate)
+* Detect basic call quality signals
+
+**Allowed**
+
+* Audio format conversion
+* Noise estimation
+* Call stability heuristics
+
+**Forbidden**
+
+* STT
+* Translation
+* NLP
+* IDs
+* Storage
+
+---
+
+### Phase 2 — Speech-to-Text (STT ONLY)
+
+**Responsibility**
+Convert audio → text **without interpretation**.
+
+#### STT Routing Rules
+
+* If language is **Indian native or Hinglish** → **Sarvam AI**
+* Else → **Deepgram Nova-3**
+* Whisper is allowed **ONLY as a fallback**
+
+#### Hard Rules
+
+* ❌ NO diarization
+* ❌ NO speaker labels
+* ❌ NO translation
+* ❌ NO semantic inference
+
+#### Output Contract
+
+```json
+[
+  {
+    "start_time": 0.0,
+    "end_time": 4.2,
+    "text": "raw transcribed text"
+  }
+]
 ```
 
-### STT Requirements
+---
 
-* Language detection must occur before final STT selection
-* Output must include:
+### Phase 3 — Semantic Structuring (CRITICAL PHASE)
 
-  * Speaker diarization
-  * Time-aligned utterances
-* Speakers must be labeled as:
+**Responsibility**
+Convert raw transcript → structured conversation using **semantic reasoning**.
 
-  * AGENT
-  * CUSTOMER
+This phase **replaces all acoustic diarization**.
+
+#### Responsibilities
+
+1. Translate text to English **if required**
+2. Split conversation into **AGENT vs CUSTOMER**
+3. Attach confidence per utterance
+4. Output structured JSON
+
+#### Tooling
+
+* OpenAI APIs are used here
+* Multiple models may be evaluated
+* Translation + role attribution occur in **one controlled step**
+
+#### Rules
+
+* ❌ No audio processing
+* ❌ No diarization models
+* ❌ No forced speaker assignment
+* `"speaker": "unknown"` is allowed if confidence is low
+
+#### Output
+
+```json
+[
+  {
+    "speaker": "CUSTOMER",
+    "text": "My salary was delayed",
+    "confidence": 0.82
+  }
+]
+```
 
 ---
 
-## 5. SPEAKER RULES (CRITICAL)
+### Phase 4 — Text Normalization & PII Redaction
 
-* **ALL NLP, intent, sentiment, risk, and fraud signals MUST be derived ONLY from CUSTOMER speech**
-* AGENT speech is contextual only
-* Agent statements must never be treated as customer admissions
+**Responsibility**
+Make text compliance-safe.
 
----
+#### Mandatory Redactions
 
-## 6. TEXT PROCESSING PIPELINE (MANDATORY ORDER)
-
-1. Audio normalization
-2. STT + speaker diarization
-3. Text cleanup & normalization
-4. **PII redaction (MANDATORY)**
-5. Financial NLP extraction
-6. Risk & fraud signal computation
-7. Summary generation
-8. Structured JSON output to RAG
-
-Skipping or reordering steps is not allowed.
-
----
-
-## 7. PII REDACTION RULES (NON-NEGOTIABLE)
-
-Before **any storage, embedding, or RAG use**, redact:
-
-* Credit / debit card numbers
-* Bank account numbers
-* Aadhaar / SSN
+* Credit cards
+* Bank accounts
 * OTPs
 * Phone numbers
-* Email addresses
+* Emails
+* Government IDs
 
-### Example
+#### Rules
 
+* Replace with tokens (`<OTP>`, `<CREDIT_CARD>`, etc.)
+* Never store raw PII
+* Never embed raw PII
+
+---
+
+### Phase 5 — Sentiment Analysis (CUSTOMER ONLY)
+
+**Responsibility**
+Detect emotional state in **financial context**.
+
+#### Rules
+
+* OpenAI only
+* CUSTOMER utterances only
+* No intent or risk inference
+
+#### Allowed Labels
+
+* calm
+* neutral
+* stressed
+* anxious
+* frustrated
+* evasive
+
+---
+
+### Phase 6 — Intent, Obligation & Contradiction Detection
+
+**Responsibility**
+Understand **what the customer is doing**, not how risky it is.
+
+#### Rules
+
+* OpenAI for intent + contradiction detection
+* Deterministic logic for obligation strength
+* No risk scoring
+
+#### Intent Labels
+
+* repayment_promise
+* repayment_delay
+* refusal
+* deflection
+* information_seeking
+* dispute
+* unknown
+
+---
+
+### Phase 7 — Risk & Fraud Signal Engine (NO LLMs)
+
+**Responsibility**
+Convert structured signals → risk.
+
+#### Rules
+
+* 100% deterministic
+* No LLMs
+* No raw text
+* Transparent weighting
+
+#### Output
+
+```json
+{
+  "risk_score": 78,
+  "fraud_likelihood": "high",
+  "confidence": 0.81
+}
 ```
-"4500 1234 5678 9012" → "<CREDIT_CARD>"
-```
-
-No raw PII may appear in:
-
-* Transcripts
-* Summaries
-* Embeddings
-* RAG inputs
 
 ---
 
-## 8. NLP EXTRACTION RULES
+### Phase 8 — Summary Generation (RAG Anchor)
 
-### 8.1 Intent Detection
+**Responsibility**
+Generate a **single-sentence**, neutral summary for embedding.
 
-* Enum-based
-* Must include:
+#### Rules
 
-  * Confidence (0–1)
-  * Conditionality (low | medium | high)
-
-### 8.2 Sentiment Detection
-
-* Financial-context sentiment only
-* Must include confidence
-
-### 8.3 Obligation Strength
-
-* Classify commitment as:
-
-  * strong
-  * weak
-  * conditional
-  * none
-
-### 8.4 Contradiction Detection
-
-* Detect inconsistencies within the same call
-* Binary output (true / false)
+* OpenAI allowed
+* Structured inputs only
+* No raw transcript
+* No accusations
+* Exactly one sentence
 
 ---
 
-## 9. RISK & FRAUD SIGNAL ENGINE
+## 5. Identity & Persistence Rules
 
-Risk must be computed using **multiple signals**, not a single factor.
-
-### Inputs
-
-* Intent + confidence + conditionality
-* Sentiment stability
-* Obligation strength
-* Contradictions
-* Audio trust signals
-* Behavioral patterns (evasion, urgency, deflection)
-
-### Outputs
-
-* Numerical risk score (0–100)
-* Fraud likelihood (low | medium | high)
-* Key contributing risk factors
+* `call_id` is generated **only by backend persistence**
+* NLP services are **stateless**
+* Metadata may be optional at ingestion
+* No phase assumes identity existence
 
 ---
 
-## 10. RAG ROLE (STRICT)
+## 6. LLM Usage Rules (GLOBAL)
 
-RAG is used ONLY for:
+LLMs MAY:
 
-* Grounding risk signals against known fraud patterns
-* Aligning outputs with compliance & policy language
-* Generating explanations and recommendations
+* Translate
+* Attribute roles
+* Detect sentiment
+* Detect intent
+* Detect contradictions
+* Generate summaries
 
-RAG must NOT:
+LLMs MUST NOT:
 
-* Re-extract intent
-* Re-score risk
-* Analyze raw transcript
-* Make accusations
-* Track users
+* Assign risk or fraud
+* Make legal assertions
+* Invent facts
+* Store data
+* Bypass deterministic logic
 
 ---
 
-## 11. FINAL JSON FORMAT SENT TO RAG (LOCKED)
+## 7. RAG Rules
+
+* Only Phase 8 summaries may be embedded
+* Full JSON is stored in structured storage
+* Vector DB must NEVER contain:
+
+  * Raw transcript
+  * PII
+  * Risk scores
+  * Agent statements
+
+---
+
+## 8. Performance Rules
+
+* Long audio MUST be chunked
+* STT MUST be parallelized
+* No phase blocks the entire pipeline
+* Partial failure is allowed with confidence degradation
+
+---
+
+## 9. Copilot / AI Assistant Rules
+
+* Always generate an execution plan first
+* Never expand phase scope
+* Never merge phase responsibilities
+* If unsure → STOP and refer to this file
+
+---
+
+## 10. Final Output Contract (MANDATORY)
+
+### Purpose
+
+Defines the **only valid final JSON output** of VoiceOps.
+
+No phase may:
+
+* Rename fields
+* Remove sections
+* Add speculative fields
+* Change nesting
+
+---
+
+### Final JSON Output Schema (LOCKED)
 
 ```json
 {
   "call_context": {
-    "call_language": "string",
+    "call_language": "hinglish",
     "call_quality": {
-      "noise_level": "low | medium | high",
-      "call_stability": "low | medium | high",
-      "speech_naturalness": "normal | suspicious"
+      "noise_level": "medium",
+      "call_stability": "low",
+      "speech_naturalness": "suspicious"
     }
   },
 
@@ -215,78 +359,73 @@ RAG must NOT:
 
   "nlp_insights": {
     "intent": {
-      "label": "enum",
-      "confidence": 0.0,
-      "conditionality": "low | medium | high"
+      "label": "repayment_promise",
+      "confidence": 0.6,
+      "conditionality": "high"
     },
 
     "sentiment": {
-      "label": "enum",
-      "confidence": 0.0
+      "label": "stressed",
+      "confidence": 0.82
     },
 
-    "obligation_strength": "strong | weak | conditional | none",
+    "obligation_strength": "weak",
 
     "entities": {
-      "payment_commitment": "enum | null",
-      "amount_mentioned": "number | null"
+      "payment_commitment": "next_week",
+      "amount_mentioned": null
     },
 
     "contradictions_detected": true
   },
 
   "risk_signals": {
-    "audio_trust_flags": ["enum"],
-    "behavioral_flags": ["enum"]
+    "audio_trust_flags": [
+      "low_call_stability",
+      "unnatural_speech_pattern"
+    ],
+
+    "behavioral_flags": [
+      "conditional_commitment",
+      "evasive_responses",
+      "statement_contradiction"
+    ]
   },
 
   "risk_assessment": {
-    "risk_score": 0,
-    "fraud_likelihood": "low | medium | high",
-    "confidence": 0.0
+    "risk_score": 78,
+    "fraud_likelihood": "high",
+    "confidence": 0.81
   },
 
-  "summary_for_rag": "string"
+  "summary_for_rag": "Customer made a conditional repayment promise, showed stress, and contradicted earlier statements, which aligns with known high-risk call patterns."
 }
 ```
 
-### JSON Rules
+---
 
-* All keys must always exist
-* Optional values must be `null`, never omitted
-* No extra fields allowed
-* No PII allowed
+## 11. Section Ownership by Phase
+
+| Section                              | Phase     |
+| ------------------------------------ | --------- |
+| call_context                         | Phase 1–2 |
+| speaker_analysis                     | Phase 3   |
+| nlp_insights.sentiment               | Phase 5   |
+| nlp_insights.intent                  | Phase 6   |
+| nlp_insights.entities                | Phase 6   |
+| nlp_insights.contradictions_detected | Phase 6   |
+| risk_signals                         | Phase 7   |
+| risk_assessment                      | Phase 7   |
+| summary_for_rag                      | Phase 8   |
 
 ---
 
-## 12. OUTPUT GUARANTEES
+## 12. Final Architectural Assertion
 
-* Deterministic structure
-* Explainable signals
-* No identity dependency
-* No compliance violations
-* Workflow-ready output
+> **VoiceOps treats voice as probabilistic signal,
+> language as contextual evidence,
+> and risk as a deterministic outcome.**
 
----
+Any implementation violating this document is incorrect.
 
-## 13. WHAT THIS SYSTEM MUST NEVER DO
 
-❌ Track customer history
-❌ Store raw transcripts with PII
-❌ Accuse users of fraud
-❌ Use agent speech as evidence
-❌ Allow RAG to invent facts
-❌ Depend on identity availability
-
----
-
-## 14. ONE-LINE SYSTEM DEFINITION
-
-> VoiceOps analyzes financial calls in real time to detect unreliable commitments and fraud-like patterns, grounding explainable risk signals against known knowledge using RAG.
-
----
-
-## FINAL NOTE FOR GITHUB COPILOT
-
-This file is a **hard constraint**.
-If generated code violates this document, it is **incorrect by design**.

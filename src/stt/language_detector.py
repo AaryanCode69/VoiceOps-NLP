@@ -6,13 +6,19 @@ Language Detection — VoiceOps Phase 2
 Responsibility:
     - Detect the dominant spoken language of normalized audio
     - Determine whether the language is Indian (Hindi, Hinglish, regional)
-    - Provide the Whisper transcript from the detection call for reuse
+    - Route decision: Indian → Sarvam AI; non-Indian → Deepgram Nova-3
 
 Language detection MUST occur before STT provider selection (RULES.md §4).
 
+Detection uses OpenAI Whisper (whisper-1) ONLY to identify the spoken
+language. The transcript returned by Whisper is discarded — actual STT
+is performed by Sarvam AI or Deepgram Nova-3 only.
+
 This module does NOT:
+    - Perform STT transcription (language ID only)
     - Perform NLP, sentiment, intent, or risk analysis
     - Perform PII redaction
+    - Perform translation
     - Store or embed data
 """
 
@@ -22,7 +28,6 @@ import os
 import wave
 from dataclasses import dataclass
 
-import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -82,7 +87,7 @@ class LanguageDetectionResult:
 
     language_code: str  # ISO 639-1 (e.g. "hi", "en")
     language_name: str  # Human-readable (e.g. "Hindi", "English")
-    is_indian: bool     # True → route to Sarvam; False → route to Whisper
+    is_indian: bool     # True → route to Sarvam; False → route to Deepgram
     was_trimmed: bool = False  # True if only a clip was used for detection
 
 
@@ -95,7 +100,10 @@ def detect_language(audio_bytes: bytes) -> LanguageDetectionResult:
     """
     Detect the dominant spoken language in the audio.
 
-    Uses OpenAI Whisper API to identify the language.
+    Uses OpenAI Whisper API (whisper-1) ONLY for language identification.
+    The transcript produced by Whisper is discarded — actual STT is
+    performed by Sarvam AI or Deepgram Nova-3 downstream.
+
     This must run before STT provider selection (RULES.md §4).
 
     Args:
@@ -106,29 +114,6 @@ def detect_language(audio_bytes: bytes) -> LanguageDetectionResult:
 
     Raises:
         RuntimeError: If language detection fails.
-    """
-    result, _ = detect_language_with_transcript(audio_bytes)
-    return result
-
-
-def detect_language_with_transcript(
-    audio_bytes: bytes,
-) -> tuple[LanguageDetectionResult, list[TranscriptSegment]]:
-    """
-    Detect language AND produce timestamped transcript in one API call.
-
-    The transcript is a by-product of language detection via Whisper.
-    The router reuses it for non-Indian audio to avoid a redundant
-    Whisper call.
-
-    Args:
-        audio_bytes: Normalized audio (mono 16 kHz WAV bytes).
-
-    Returns:
-        Tuple of (LanguageDetectionResult, list of TranscriptSegment).
-
-    Raises:
-        RuntimeError: If the Whisper API call fails.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -150,31 +135,23 @@ def detect_language_with_transcript(
             timestamp_granularities=["segment"],
         )
     except Exception as exc:
-        raise RuntimeError(f"Whisper language detection failed: {exc}") from exc
+        raise RuntimeError(
+            f"Whisper language detection failed: {exc}"
+        ) from exc
 
-    # Extract language code from Whisper response (ISO 639-1)
-    language_code: str = getattr(response, "language", "unknown") or "unknown"
+    # ------------------------------------------------------------------
+    # Extract language code from Whisper response (ISO 639-1).
+    # The transcript text is intentionally discarded — Whisper is used
+    # here ONLY for language identification, not for STT.
+    #
+    # NOTE: Whisper sometimes returns full language names (e.g. "tamil")
+    # instead of ISO 639-1 codes (e.g. "ta"). We normalise to ISO codes
+    # so that the INDIAN_LANGUAGE_CODES lookup works reliably.
+    # ------------------------------------------------------------------
+    raw_language: str = (getattr(response, "language", "unknown") or "unknown").strip().lower()
+    language_code = _normalize_language_code(raw_language)
     is_indian = language_code in INDIAN_LANGUAGE_CODES
     language_name = _LANGUAGE_NAMES.get(language_code, language_code.title())
-
-    # Extract timestamped segments from the Whisper response
-    segments: list[TranscriptSegment] = []
-    raw_segments = getattr(response, "segments", None) or []
-    for seg in raw_segments:
-        # Handle both dict and object attribute access patterns
-        if isinstance(seg, dict):
-            text = seg.get("text", "").strip()
-            start = float(seg.get("start", 0.0))
-            end = float(seg.get("end", 0.0))
-        else:
-            text = getattr(seg, "text", "").strip()
-            start = float(getattr(seg, "start", 0.0))
-            end = float(getattr(seg, "end", 0.0))
-
-        if text:
-            segments.append(
-                TranscriptSegment(text=text, start_time=start, end_time=end)
-            )
 
     lang_result = LanguageDetectionResult(
         language_code=language_code,
@@ -183,23 +160,22 @@ def detect_language_with_transcript(
         was_trimmed=was_trimmed,
     )
 
-    if was_trimmed:
-        logger.info(
-            "Language detected from %ds clip: %s (%s)",
-            DETECTION_CLIP_SECONDS, language_name, language_code,
-        )
-    else:
-        logger.info(
-            "Language detected from full audio: %s (%s)",
-            language_name, language_code,
-        )
+    clip_info = f"{DETECTION_CLIP_SECONDS}s clip" if was_trimmed else "full audio"
+    logger.info(
+        "Language detected from %s: %s (%s) — route to %s",
+        clip_info,
+        language_name,
+        language_code,
+        "Sarvam AI" if is_indian else "Deepgram Nova-3",
+    )
 
-    return lang_result, segments
+    return lang_result
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _maybe_trim_for_detection(audio_bytes: bytes) -> tuple[bytes, bool]:
     """
@@ -243,6 +219,79 @@ def _maybe_trim_for_detection(audio_bytes: bytes) -> tuple[bytes, bool]:
         duration, DETECTION_CLIP_SECONDS,
     )
     return out.getvalue(), True
+
+
+# ---------------------------------------------------------------------------
+# Whisper language-code normalisation
+# ---------------------------------------------------------------------------
+# Whisper may return full language names (e.g. "tamil", "hindi",
+# "english") instead of ISO 639-1 codes. This map lets us normalise
+# both forms to the canonical two-letter code.
+
+_LANGUAGE_NAME_TO_CODE: dict[str, str] = {
+    "hindi": "hi",
+    "marathi": "mr",
+    "tamil": "ta",
+    "telugu": "te",
+    "kannada": "kn",
+    "malayalam": "ml",
+    "gujarati": "gu",
+    "punjabi": "pa",
+    "bengali": "bn",
+    "odia": "or",
+    "assamese": "as",
+    "urdu": "ur",
+    "nepali": "ne",
+    "sanskrit": "sa",
+    "sindhi": "sd",
+    "sinhala": "si",
+    "english": "en",
+    "arabic": "ar",
+    "chinese": "zh",
+    "spanish": "es",
+    "french": "fr",
+    "german": "de",
+    "japanese": "ja",
+    "korean": "ko",
+    "portuguese": "pt",
+    "russian": "ru",
+    "italian": "it",
+    "dutch": "nl",
+    "polish": "pl",
+    "turkish": "tr",
+    "vietnamese": "vi",
+    "thai": "th",
+    "swedish": "sv",
+    "danish": "da",
+    "finnish": "fi",
+    "norwegian": "no",
+}
+
+
+def _normalize_language_code(raw: str) -> str:
+    """
+    Convert a Whisper language response to an ISO 639-1 code.
+
+    Handles both cases:
+        - Already an ISO code (e.g. "ta") → returned as-is if recognised.
+        - Full name (e.g. "tamil") → mapped to "ta".
+
+    Falls back to the raw string lowered if no mapping exists.
+    """
+    # If it's already a known ISO code, return directly
+    if raw in _LANGUAGE_NAMES:
+        return raw
+
+    # Try full-name → ISO lookup
+    code = _LANGUAGE_NAME_TO_CODE.get(raw)
+    if code:
+        return code
+
+    # Last resort: return the raw value so callers can still operate
+    logger.debug(
+        "Unrecognised Whisper language token '%s' — using as-is.", raw,
+    )
+    return raw
 
 
 _LANGUAGE_NAMES: dict[str, str] = {

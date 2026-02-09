@@ -4,7 +4,7 @@ src/audio/normalizer.py
 Audio Normalizer — VoiceOps Phase 1
 
 Responsibility:
-    - Validate audio file format (.wav, .mp3)
+    - Validate audio file format (.wav, .mp3, .m4a)
     - Validate audio is non-empty and within duration limits
     - Convert audio to mono channel
     - Resample audio to 16kHz sample rate
@@ -26,7 +26,7 @@ from pydub.exceptions import CouldntDecodeError
 # Constants
 # ---------------------------------------------------------------------------
 
-ALLOWED_EXTENSIONS = {".wav", ".mp3"}
+ALLOWED_EXTENSIONS = {".wav", ".mp3", ".m4a"}
 TARGET_SAMPLE_RATE = 16000  # Hz
 TARGET_CHANNELS = 1  # mono
 MAX_DURATION_SECONDS = 1800  # 30 minutes — safety limit
@@ -55,7 +55,7 @@ class AudioNormalizationError(Exception):
 
 def validate_extension(filename: str) -> None:
     """
-    Check that the file extension is .wav or .mp3.
+    Check that the file extension is .wav, .mp3, or .m4a.
 
     Raises:
         AudioValidationError: If the extension is not allowed.

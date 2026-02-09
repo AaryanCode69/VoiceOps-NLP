@@ -2,6 +2,10 @@
 # ====================
 # NLP Extraction Layer — VoiceOps
 #
+# Phase 3 implements:
+#   - Semantic structuring: translate + role attribution (per RULES.md §4 Phase 3)
+#   - Entry point: structure_semantically(transcript) → structured utterances
+#
 # Phase 4 implements:
 #   - Text cleanup & normalization (pipeline step 3, per RULES.md §6)
 #   - PII redaction (mandatory, pipeline step 4, per RULES.md §7)
@@ -19,6 +23,7 @@ from typing import Any
 
 from src.nlp.normalizer import normalize_utterances
 from src.nlp.pii_redactor import redact_utterances
+from src.nlp.semantic_structurer import structure_semantically
 
 logger = logging.getLogger("voiceops.nlp")
 

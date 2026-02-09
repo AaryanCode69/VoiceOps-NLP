@@ -5,24 +5,33 @@ Sarvam AI STT Client — VoiceOps Phase 2
 
 Responsibility:
     - Transcribe audio using Sarvam AI API (saaras model)
-    - Translate Indian language text to English using Sarvam Translate API
-    - Return time-aligned text segments
+    - Return raw time-aligned text segments
     - Used for Hindi, Hinglish, and Indian regional languages (per RULES.md §4)
 
+Per Phase 2 spec:
+    - No translation (Phase 3 responsibility)
+    - No diarization or speaker labels
+    - No semantic inference
+    - Output is raw text + timestamps only
+
 This module does NOT:
-    - Perform speaker diarization (handled by diarizer.py)
+    - Perform speaker diarization or role classification
+    - Translate text
     - Perform NLP, sentiment, intent, or risk analysis
     - Perform PII redaction
     - Store or embed data
 """
 
 import io
+import logging
 import os
 
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger("voiceops.stt.sarvam_client")
 
 from src.stt.language_detector import TranscriptSegment
 
@@ -33,8 +42,7 @@ from src.stt.language_detector import TranscriptSegment
 
 SARVAM_API_BASE = "https://api.sarvam.ai"
 SARVAM_STT_ENDPOINT = f"{SARVAM_API_BASE}/speech-to-text"
-SARVAM_TRANSLATE_ENDPOINT = f"{SARVAM_API_BASE}/translate"
-SARVAM_MODEL = "saaras:v2"
+SARVAM_MODEL = "saaras:v3"
 
 # Map ISO 639-1 to Sarvam BCP 47 language codes
 _LANGUAGE_CODE_MAP: dict[str, str] = {
@@ -69,8 +77,7 @@ def transcribe(
     """
     Transcribe audio using the Sarvam AI STT API.
 
-    Returns timestamped text segments. No speaker labels — diarization
-    is handled separately by diarizer.py.
+    Returns timestamped text segments. No speaker labels, no translation.
 
     Args:
         audio_bytes:   Normalized audio (mono 16 kHz WAV bytes).
@@ -111,95 +118,64 @@ def transcribe(
             timeout=120,
         )
         resp.raise_for_status()
+    except requests.HTTPError as exc:
+        # Capture response body for diagnostics (Sarvam 400s include details)
+        detail = ""
+        try:
+            detail = f" — response: {resp.text[:500]}"
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Sarvam API request failed: {exc}{detail}"
+        ) from exc
     except requests.RequestException as exc:
         raise RuntimeError(f"Sarvam API request failed: {exc}") from exc
 
     body = resp.json()
+    logger.debug("Sarvam v3 raw response keys: %s", list(body.keys()))
+    logger.debug("Sarvam v3 raw response body (truncated): %.1000s", body)
     return _parse_response(body)
 
 
-def transcribe_and_translate(
+def transcribe_chunk(
     audio_bytes: bytes,
     language_code: str,
-) -> list[TranscriptSegment]:
+) -> dict | None:
     """
-    Transcribe audio using Sarvam AI STT, then translate the text to English
-    using Sarvam's Translate API.
+    Transcribe a single audio chunk using Sarvam AI.
+
+    Returns a dict matching the Phase 2 chunk output contract
+    (text + start_time + end_time), compatible with Deepgram's output.
 
     Args:
-        audio_bytes:   Normalized audio (mono 16 kHz WAV bytes).
+        audio_bytes:   WAV audio bytes for a single chunk.
         language_code: ISO 639-1 language code (e.g. "hi", "ta").
 
     Returns:
-        List of TranscriptSegment with English text and time boundaries.
+        A dict containing:
+            - text       (str):   Transcribed text for this chunk
+            - start_time (float): Start of first segment (seconds, chunk-relative)
+            - end_time   (float): End of last segment (seconds, chunk-relative)
+
+        Returns None if Sarvam produces no transcript.
 
     Raises:
-        RuntimeError: If STT or translation fails.
+        RuntimeError: If the Sarvam API call fails.
     """
-    # Step 1: Transcribe in the original language
     segments = transcribe(audio_bytes, language_code)
 
     if not segments:
-        return segments
+        return None
 
-    # Step 2: Translate each segment's text to English
-    sarvam_lang = _LANGUAGE_CODE_MAP.get(language_code, f"{language_code}-IN")
-    translated_segments: list[TranscriptSegment] = []
+    texts = [seg.text.strip() for seg in segments if seg.text.strip()]
+    if not texts:
+        return None
 
-    for seg in segments:
-        english_text = _translate_text(seg.text, source_lang=sarvam_lang)
-        translated_segments.append(
-            TranscriptSegment(
-                text=english_text,
-                start_time=seg.start_time,
-                end_time=seg.end_time,
-            )
-        )
-
-    return translated_segments
-
-
-def _translate_text(text: str, source_lang: str) -> str:
-    """
-    Translate a single text string from an Indian language to English
-    using the Sarvam Translate API.
-
-    Args:
-        text:        Text in the source Indian language.
-        source_lang: Sarvam BCP 47 language code (e.g. "hi-IN").
-
-    Returns:
-        Translated English text. Falls back to original text on failure.
-    """
-    api_key = os.environ.get("SARVAM_API_KEY")
-    if not api_key:
-        return text  # Fallback: return original if no key
-
-    headers = {
-        "api-subscription-key": api_key,
-        "Content-Type": "application/json",
+    return {
+        "text": " ".join(texts),
+        "start_time": round(segments[0].start_time, 2),
+        "end_time": round(segments[-1].end_time, 2),
     }
-
-    payload = {
-        "input": text,
-        "source_language_code": source_lang,
-        "target_language_code": "en-IN",
-        "model": "mayura:v1",
-        "enable_preprocessing": True,
-    }
-
-    try:
-        resp = requests.post(
-            SARVAM_TRANSLATE_ENDPOINT,
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        body = resp.json()
-        return body.get("translated_text", text)
-    except requests.RequestException:
-        return text  # Fallback: return original on error
 
 
 # ---------------------------------------------------------------------------
@@ -211,15 +187,38 @@ def _parse_response(body: dict) -> list[TranscriptSegment]:
     """
     Parse Sarvam API response into TranscriptSegment list.
 
-    Handles both word-level timestamps and plain transcript fallback.
+    Handles the Sarvam v3 parallel-array timestamp format:
+        {
+          "transcript": "...",
+          "timestamps": {
+            "words": ["word1", "word2", ...],
+            "start_time_seconds": [0.0, 0.5, ...],
+            "end_time_seconds": [0.4, 0.9, ...]
+          }
+        }
+
+    Falls back to plain transcript if timestamps are absent.
     """
     segments: list[TranscriptSegment] = []
 
-    # Try word-level timestamps first
+    # Try word-level timestamps first (v3 parallel-array format)
     timestamps = body.get("timestamps") or {}
     words = timestamps.get("words") or []
+    start_times = timestamps.get("start_time_seconds") or []
+    end_times = timestamps.get("end_time_seconds") or []
 
-    if words:
+    if words and start_times and end_times:
+        # Build unified word entries from parallel arrays
+        word_entries = []
+        for i, w_text in enumerate(words):
+            word_entries.append({
+                "word": w_text if isinstance(w_text, str) else str(w_text),
+                "start": float(start_times[i]) if i < len(start_times) else 0.0,
+                "end": float(end_times[i]) if i < len(end_times) else 0.0,
+            })
+        segments = _group_words_into_segments(word_entries)
+    elif words and isinstance(words[0], dict):
+        # Legacy v2 dict format fallback (just in case)
         segments = _group_words_into_segments(words)
     else:
         # Fallback: single segment from full transcript (no fine-grained timing)

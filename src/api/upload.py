@@ -5,12 +5,12 @@ API Upload Endpoint — VoiceOps Phase 1 + Phase 2
 
 Responsibility:
     - Expose POST /analyze-call
-    - Accept a single audio file (.wav or .mp3) via multipart/form-data
+    - Accept a single audio file (.wav, .mp3, or .m4a) via multipart/form-data
     - Reject requests missing an audio file
     - Reject disallowed file types
     - Delegate audio validation and normalization to src.audio.normalizer (Phase 1)
-    - Delegate language detection, STT routing, and diarization to src.stt (Phase 2)
-    - Return raw diarized transcript (no analysis, no IDs)
+    - Delegate chunked STT transcription to src.stt (Phase 2)
+    - Return timestamped transcript (no speaker labels, no analysis, no IDs)
 
 Per RULES.md §3:
     - No customer_id, loan_id, or call_id is accepted or generated.
@@ -30,7 +30,7 @@ from src.audio.normalizer import (
     AudioValidationError,
     AudioNormalizationError,
 )
-from src.stt.router import transcribe_and_diarize
+from src.stt.router import transcribe
 
 
 # ---------------------------------------------------------------------------
@@ -52,14 +52,14 @@ app = FastAPI(
 @app.post("/analyze-call")
 async def analyze_call(audio_file: UploadFile = File(...)):
     """
-    Accept an audio file, validate & normalize it (Phase 1), then detect
-    language, transcribe, and diarize (Phase 2).
+    Accept an audio file, validate & normalize it (Phase 1), then
+    transcribe via chunked STT (Phase 2).
 
     Args:
-        audio_file: Uploaded audio file (.wav or .mp3).
+        audio_file: Uploaded audio file (.wav, .mp3, or .m4a).
 
     Returns:
-        JSON with raw diarized transcript.
+        JSON with timestamped transcript segments.
     """
 
     # Guard: file must be provided (FastAPI enforces via File(...), but
@@ -86,17 +86,17 @@ async def analyze_call(audio_file: UploadFile = File(...)):
     except AudioNormalizationError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
-    # Phase 2: Language detection → STT routing → diarization
-    logger.info("Phase 2: Starting language detection, STT routing, and diarization...")
+    # Phase 2: Chunked STT transcription (diarization-agnostic)
+    logger.info("Phase 2: Starting chunked STT transcription...")
     try:
         transcript = await asyncio.to_thread(
-            transcribe_and_diarize, normalized_audio
+            transcribe, normalized_audio
         )
     except RuntimeError as exc:
         logger.error("Phase 2 failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
-    logger.info("Phase 2 complete — %d utterances in transcript.", len(transcript))
+    logger.info("Phase 2 complete — %d transcript segment(s).", len(transcript))
 
     return JSONResponse(
         status_code=200,

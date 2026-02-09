@@ -4,7 +4,7 @@
 #
 # Responsibility (future phases):
 #   - Expose POST /analyze-call endpoint
-#   - Accept audio file upload (wav | mp3) via multipart/form-data
+#   - Accept audio file upload (wav | mp3 | m4a) via multipart/form-data
 #   - Reject any customer_id, loan_id, or call_id (per RULES.md §3)
 #   - Return structured JSON response (per RULES.md §11)
 #
