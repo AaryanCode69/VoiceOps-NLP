@@ -23,7 +23,7 @@ src/
 
 ## Current Phase
 
-**Phase 4** — Text normalization and PII redaction.
+**Phase 5** — Financial-context sentiment analysis.
 
 ### What Phase 1 implements
 
@@ -83,6 +83,33 @@ After Phase 4 processing, the utterance list satisfies the following invariants:
 - **Output is deterministic** — same input always produces same output
 - **No external API calls** — all processing is local regex-based pattern matching
 - **No downstream logic** — no intent, sentiment, risk, scores, or identifiers are introduced
+
+### What Phase 5 implements
+
+| File | Purpose |
+|---|---|
+| `src/nlp/sentiment.py` | Classifies financial-context sentiment from CUSTOMER utterances using OpenAI API; returns label + confidence |
+
+### Phase 5 — Sentiment Scope & Limitations
+
+- **CUSTOMER utterances only** — AGENT speech is never analyzed for sentiment (per RULES.md §5)
+- **Input must be Phase 4 output** — utterances must be normalized and PII-redacted before sentiment analysis
+- **Financial context** — sentiment is classified in the context of financial calls (debt, payments, obligations), not general conversation
+- **Allowed labels:** `calm`, `neutral`, `stressed`, `anxious`, `frustrated`, `evasive` — no other labels are produced
+- **Confidence score:** 0.0–1.0 float representing classifier certainty
+- **OpenAI API required** — uses `gpt-4o-mini` with `temperature=0.0` for deterministic output
+- **No fallback logic** — if OpenAI is unavailable, the call fails (no local heuristic)
+- **Default behavior:** if no CUSTOMER utterances exist, returns `{"label": "neutral", "confidence": 0.0}`
+- **No downstream logic** — no intent, risk, fraud scores, summaries, or identifiers are produced
+
+### Phase 5 — Output Format
+
+```json
+{
+  "label": "stressed",
+  "confidence": 0.82
+}
+```
 
 ### STT Routing Logic (per RULES.md §4)
 
@@ -163,7 +190,8 @@ uvicorn main:app --reload
 3. **Diarization validation + utterance structuring** ← Phase 3 (implemented)
 4. **Text cleanup & normalization** ← Phase 4 (implemented)
 5. **PII redaction (mandatory)** ← Phase 4 (implemented)
-6. Financial NLP extraction
-7. Risk & fraud signal computation
+6. **Financial NLP extraction (sentiment)** ← Phase 5 (implemented)
+7. Financial NLP extraction (intent, obligations, contradictions)
+8. Risk & fraud signal computation
 8. Summary generation
 9. Structured JSON output to RAG

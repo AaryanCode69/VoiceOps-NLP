@@ -120,10 +120,11 @@ def diarize_and_merge(
     logger.info("\u23f1\ufe0f  Diarization inference took %.2fs", t1 - t0)
 
     if not speaker_turns:
-        # Fallback: if diarization produces no speaker turns, label all AGENT
+        # Fallback: if diarization produces no speaker turns (single party),
+        # assume the sole speaker is the CUSTOMER.
         return [
             DiarizedUtterance(
-                speaker=SPEAKER_AGENT,
+                speaker=SPEAKER_CUSTOMER,
                 text=seg.text,
                 start_time=seg.start_time,
                 end_time=seg.end_time,
@@ -318,9 +319,11 @@ def _build_speaker_label_map(turns: list[SpeakerTurn]) -> dict[str, str]:
     """
     Map raw speaker labels to AGENT / CUSTOMER.
 
-    Heuristic: In call-center audio, the first speaker is typically the
-    AGENT (initiating the call). The second unique speaker is the CUSTOMER.
-    Any additional speakers are mapped to CUSTOMER by default.
+    Heuristic:
+        - If only ONE unique speaker is detected, assume CUSTOMER
+          (single-party recording).
+        - If two or more speakers: the first speaker is the AGENT
+          (initiating the call), all others are CUSTOMER.
 
     Args:
         turns: Ordered list of SpeakerTurn.
@@ -334,11 +337,17 @@ def _build_speaker_label_map(turns: list[SpeakerTurn]) -> dict[str, str]:
             seen_order.append(t.speaker)
 
     label_map: dict[str, str] = {}
-    for i, raw_label in enumerate(seen_order):
-        if i == 0:
-            label_map[raw_label] = SPEAKER_AGENT
-        else:
-            label_map[raw_label] = SPEAKER_CUSTOMER
+
+    if len(seen_order) == 1:
+        # Single speaker detected → assume CUSTOMER
+        label_map[seen_order[0]] = SPEAKER_CUSTOMER
+    else:
+        # Multiple speakers: first = AGENT, rest = CUSTOMER
+        for i, raw_label in enumerate(seen_order):
+            if i == 0:
+                label_map[raw_label] = SPEAKER_AGENT
+            else:
+                label_map[raw_label] = SPEAKER_CUSTOMER
 
     return label_map
 
