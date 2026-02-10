@@ -2,9 +2,11 @@
 
 > VoiceOps analyzes financial calls in real time to detect unreliable commitments and fraud-like patterns, grounding explainable risk signals against known knowledge using RAG.
 
-## Architecture Reference
+## Rag Pipeline [![GitHub](https://img.shields.io/badge/-GitHub-181717?logo=github&logoColor=white)](https://github.com/raghavvag/VoiceOPs_Rag_Pipeline)
+https://github.com/raghavvag/VoiceOPs_Rag_Pipeline
 
-All implementation is governed by [docs/RULES.md](docs/RULES.md). That file is a **hard constraint** — any code that violates it is incorrect by design.
+## Frontend [![GitHub](https://img.shields.io/badge/-GitHub-181717?logo=github&logoColor=white)](https://github.com/kriti11m/VoiceOps_frontend.git)
+https://github.com/kriti11m/VoiceOps_frontend.git
 
 ## Project Structure
 
