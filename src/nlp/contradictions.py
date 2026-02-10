@@ -26,6 +26,8 @@ This module does NOT:
 import json
 import logging
 import os
+import threading
+import time
 from typing import Any
 
 from openai import OpenAI
@@ -33,6 +35,132 @@ from openai import OpenAI
 from src.openai_retry import chat_completions_with_retry
 
 logger = logging.getLogger("voiceops.nlp.contradictions")
+
+
+# ---------------------------------------------------------------------------
+# Adaptive Token-Bucket Rate Limiter (module-scoped, thread-safe)
+# ---------------------------------------------------------------------------
+# Prevents 429 errors by proactively throttling OpenAI calls.
+# - Only sleeps when the bucket is empty (zero overhead otherwise).
+# - If a 429 *still* leaks through, the limiter halves its rate
+#   temporarily and recovers over time.
+# ---------------------------------------------------------------------------
+
+class _AdaptiveRateLimiter:
+    """
+    Token-bucket rate limiter with adaptive back-off.
+
+    Parameters
+    ----------
+    max_rpm : int
+        Baseline requests-per-minute budget for this module.
+    burst : int
+        Maximum tokens that can accumulate (allows short bursts).
+    cooldown_factor : float
+        Multiplier applied to the refill interval on a 429 hit
+        (e.g. 2.0 → halve the effective RPM).
+    recovery_calls : int
+        Number of successful calls before the cooldown fully resets.
+    """
+
+    def __init__(
+        self,
+        max_rpm: int = 30,
+        burst: int = 5,
+        cooldown_factor: float = 2.0,
+        recovery_calls: int = 10,
+    ) -> None:
+        self._lock = threading.Lock()
+
+        # --- bucket state ---
+        self._burst = burst
+        self._tokens = float(burst)          # start with full burst
+        self._base_interval = 60.0 / max_rpm  # seconds between refills
+        self._interval = self._base_interval
+        self._last_refill = time.monotonic()
+
+        # --- adaptive state ---
+        self._cooldown_factor = cooldown_factor
+        self._recovery_calls = recovery_calls
+        self._success_streak = 0
+
+    # ---- internal helpers ------------------------------------------------
+
+    def _refill(self) -> None:
+        """Add tokens that have accrued since the last refill."""
+        now = time.monotonic()
+        elapsed = now - self._last_refill
+        new_tokens = elapsed / self._interval
+        if new_tokens > 0:
+            self._tokens = min(self._tokens + new_tokens, float(self._burst))
+            self._last_refill = now
+
+    # ---- public API ------------------------------------------------------
+
+    def acquire(self) -> None:
+        """
+        Block (if necessary) until a token is available, then consume one.
+
+        In the common case (tokens > 0) this returns **immediately**
+        with no sleep, so throughput is unaffected when the call rate
+        is well within budget.
+        """
+        with self._lock:
+            self._refill()
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return  # fast path — no wait
+            # Calculate how long until the next token is available
+            deficit = 1.0 - self._tokens
+            wait = deficit * self._interval
+
+        # Sleep *outside* the lock so other threads aren't blocked
+        logger.debug(
+            "Rate limiter: waiting %.2fs for token (interval=%.2fs).",
+            wait, self._interval,
+        )
+        time.sleep(wait)
+
+        with self._lock:
+            self._refill()
+            self._tokens = max(self._tokens - 1.0, 0.0)
+
+    def report_success(self) -> None:
+        """Signal a successful API call; gradually recover the rate."""
+        with self._lock:
+            self._success_streak += 1
+            if (
+                self._interval > self._base_interval
+                and self._success_streak >= self._recovery_calls
+            ):
+                self._interval = self._base_interval
+                self._success_streak = 0
+                logger.info(
+                    "Rate limiter: recovered to base interval (%.2fs).",
+                    self._interval,
+                )
+
+    def report_rate_limit(self) -> None:
+        """Signal a 429 hit; immediately tighten the rate."""
+        with self._lock:
+            self._interval = min(
+                self._interval * self._cooldown_factor,
+                60.0,  # never slower than 1 req / min
+            )
+            self._success_streak = 0
+            logger.warning(
+                "Rate limiter: 429 detected — interval raised to %.2fs.",
+                self._interval,
+            )
+
+
+# Module-level singleton — shared across all calls in this process.
+# Conservative baseline: 30 RPM with burst of 5.  Tune via env vars
+# CONTRADICTION_MAX_RPM / CONTRADICTION_BURST if needed.
+_rate_limiter = _AdaptiveRateLimiter(
+    max_rpm=int(os.environ.get("CONTRADICTION_MAX_RPM", "30")),
+    burst=int(os.environ.get("CONTRADICTION_BURST", "5")),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -201,19 +329,31 @@ def detect_contradictions(
         len(customer_texts),
     )
 
-    # Step 3: Call OpenAI API
+    # Step 3: Call OpenAI API (with proactive rate limiting)
+    _rate_limiter.acquire()
+
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-    response = chat_completions_with_retry(
-        client,
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
-        temperature=0.0,  # Deterministic output for identical inputs
-        max_tokens=30,
-    )
+    try:
+        response = chat_completions_with_retry(
+            client,
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+            temperature=0.0,  # Deterministic output for identical inputs
+            max_tokens=30,
+        )
+        _rate_limiter.report_success()
+    except Exception as exc:
+        # If a 429 leaked through the proactive limiter, tighten the rate
+        # so subsequent calls are safer — then let openai_retry handle it.
+        exc_type = type(exc).__name__
+        status = getattr(exc, "status_code", None)
+        if exc_type == "RateLimitError" or status == 429:
+            _rate_limiter.report_rate_limit()
+        raise
 
     raw_content = response.choices[0].message.content or ""
 
