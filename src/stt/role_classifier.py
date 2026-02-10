@@ -157,18 +157,18 @@ def classify_roles(
     # --- Optional OpenAI fallback (only if heuristics are inconclusive) ---
     logger.info(
         "Heuristic classification inconclusive (score=%.2f). "
-        "Attempting OpenAI fallback...",
+        "Attempting semantic classification fallback...",
         confidence,
     )
     llm_role_map = _openai_classify_fallback(utterances, unique_speakers)
 
     if llm_role_map is not None:
-        logger.info("OpenAI role classification: %s", llm_role_map)
+        logger.info("Semantic role classification: %s", llm_role_map)
         return _apply_role_map(utterances, llm_role_map)
 
     # If OpenAI also fails, use the heuristic result anyway
     logger.warning(
-        "OpenAI fallback failed. Using heuristic result: %s", role_map,
+        "Semantic classification fallback failed. Using heuristic result: %s", role_map,
     )
     return _apply_role_map(utterances, role_map)
 
@@ -290,7 +290,7 @@ def _openai_classify_fallback(
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        logger.warning("OPENAI_API_KEY not set — skipping LLM role classification.")
+        logger.warning("API key not set — skipping LLM role classification.")
         return None
 
     try:
@@ -336,16 +336,16 @@ def _openai_classify_fallback(
 
         # Validate the response
         if not isinstance(role_map, dict):
-            logger.warning("OpenAI returned non-dict: %s", content)
+            logger.warning("Role classification returned non-dict: %s", content)
             return None
 
         for spk in speakers:
             if spk not in role_map:
-                logger.warning("OpenAI response missing speaker '%s'", spk)
+                logger.warning("Role classification response missing speaker '%s'", spk)
                 return None
             if role_map[spk] not in VALID_ROLES:
                 logger.warning(
-                    "OpenAI returned invalid role '%s' for '%s'",
+                    "Role classification returned invalid role '%s' for '%s'",
                     role_map[spk], spk,
                 )
                 return None
@@ -353,7 +353,7 @@ def _openai_classify_fallback(
         return role_map
 
     except Exception as exc:
-        logger.warning("OpenAI role classification failed: %s", exc)
+        logger.warning("Semantic role classification failed: %s", exc)
         return None
 
 

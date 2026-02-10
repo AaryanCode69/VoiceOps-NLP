@@ -113,7 +113,7 @@ def _batch_translate(
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         logger.warning(
-            "OPENAI_API_KEY not set — returning original texts without translation."
+            "API key not set — returning original texts without translation."
         )
         return list(texts)
 
@@ -160,7 +160,7 @@ def _batch_translate(
 
     except Exception as exc:
         logger.warning(
-            "OpenAI translation failed: %s. Returning original texts.", exc,
+            "Translation processing failed: %s. Returning original texts.", exc,
         )
         return list(texts)
 

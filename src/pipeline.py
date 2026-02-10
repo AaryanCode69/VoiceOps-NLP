@@ -421,6 +421,7 @@ def run_pipeline(audio_bytes: bytes, filename: str) -> dict[str, Any]:
         behavioral_flags=behavioral_flags,
         risk_assessment=risk_assessment,
         summary=summary,
+        conversation=phase4_output,
     )
 
     logger.info("Pipeline complete — final JSON assembled.")
@@ -493,6 +494,7 @@ def _assemble_final_json(
     behavioral_flags: list[str],
     risk_assessment: dict[str, Any],
     summary: str,
+    conversation: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Assemble the FINAL structured JSON per RULES.md §10.
@@ -550,4 +552,11 @@ def _assemble_final_json(
             "confidence": risk_assessment["confidence"],
         },
         "summary_for_rag": summary,
+        "conversation": [
+            {
+                "speaker": utt["speaker"],
+                "text": utt["text"],
+            }
+            for utt in (conversation or [])
+        ],
     }

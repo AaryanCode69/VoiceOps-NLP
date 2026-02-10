@@ -186,7 +186,7 @@ def _attribute_batch(texts: list[str]) -> list[dict[str, Any]]:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         logger.warning(
-            "OPENAI_API_KEY not set — returning all utterances as CUSTOMER."
+            "API key not set — returning all utterances as CUSTOMER."
         )
         return [
             {"speaker": "CUSTOMER", "text": t, "confidence": 0.0}
@@ -223,7 +223,7 @@ def _attribute_batch(texts: list[str]) -> list[dict[str, Any]]:
         parsed = _parse_role_response(raw_output, texts)
 
         if parsed:
-            logger.info("OpenAI role attribution successful: %d utterances.", len(parsed))
+            logger.info("Role attribution processing successful: %d utterances.", len(parsed))
             return parsed
         else:
             logger.warning(
@@ -236,7 +236,7 @@ def _attribute_batch(texts: list[str]) -> list[dict[str, Any]]:
 
     except Exception as exc:
         logger.warning(
-            "OpenAI role attribution failed: %s. Returning all as 'unknown'.",
+            "Role attribution processing failed: %s. Returning all as 'unknown'.",
             exc,
         )
         return [

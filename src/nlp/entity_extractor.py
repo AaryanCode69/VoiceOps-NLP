@@ -131,7 +131,7 @@ def _parse_entity_response(raw: str) -> dict[str, Any]:
     try:
         parsed = json.loads(raw.strip())
     except json.JSONDecodeError as exc:
-        raise ValueError(f"OpenAI response is not valid JSON: {raw!r}") from exc
+        raise ValueError(f"Entity response is not valid JSON: {raw!r}") from exc
 
     if not isinstance(parsed, dict):
         raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
@@ -211,7 +211,7 @@ def extract_entities(
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         logger.warning(
-            "OPENAI_API_KEY not set — returning empty entities."
+            "API key not set — returning empty entities."
         )
         return dict(_DEFAULT_ENTITIES)
 
@@ -237,7 +237,7 @@ def extract_entities(
 
         raw_content = response.choices[0].message.content or ""
 
-        logger.debug("OpenAI raw entity response: %s", raw_content)
+        logger.debug("Raw entity response: %s", raw_content)
 
         entities = _parse_entity_response(raw_content)
 

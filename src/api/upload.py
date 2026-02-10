@@ -22,9 +22,13 @@ Per RULES.md §10:
 """
 
 import asyncio
+import json
 import logging
+import os
 
+import aiohttp
 from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("voiceops.api")
@@ -32,6 +36,8 @@ logger = logging.getLogger("voiceops.api")
 from src.audio.normalizer import AudioValidationError, AudioNormalizationError
 from src.pipeline import run_pipeline
 from src.phase_validator import PhaseVerificationError
+
+WEBHOOK_URL: str | None = os.getenv("WEBHOOK_URL")
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +48,14 @@ app = FastAPI(
     title="VoiceOps",
     description="Call-centric risk & fraud intelligence — audio analysis endpoint.",
     version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -106,5 +120,23 @@ async def analyze_call(audio_file: UploadFile = File(...)):
         )
 
     logger.info("Full pipeline complete — returning final structured JSON.")
+
+    # POST final JSON to the configured webhook endpoint
+    if WEBHOOK_URL:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    WEBHOOK_URL,
+                    json=final_output,
+                    headers={"Content-Type": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    logger.info(
+                        "Webhook POST to %s — status %d", WEBHOOK_URL, resp.status,
+                    )
+        except Exception as exc:
+            logger.error("Webhook POST failed: %s", exc)
+    else:
+        logger.debug("WEBHOOK_URL not configured — skipping POST.")
 
     return JSONResponse(status_code=200, content=final_output)

@@ -143,7 +143,7 @@ def _parse_sentiment_response(raw: str) -> dict[str, Any]:
     try:
         parsed = json.loads(raw.strip())
     except json.JSONDecodeError as exc:
-        raise ValueError(f"OpenAI response is not valid JSON: {raw!r}") from exc
+        raise ValueError(f"Sentiment response is not valid JSON: {raw!r}") from exc
 
     if not isinstance(parsed, dict):
         raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
@@ -221,7 +221,7 @@ def analyze_sentiment(
     user_message = _build_user_message(customer_texts)
 
     logger.info(
-        "Analyzing sentiment for %d CUSTOMER utterance(s) via OpenAI.",
+        "Analyzing sentiment for %d CUSTOMER utterance(s).",
         len(customer_texts),
     )
 
@@ -241,7 +241,7 @@ def analyze_sentiment(
 
     raw_content = response.choices[0].message.content or ""
 
-    logger.debug("OpenAI raw sentiment response: %s", raw_content)
+    logger.debug("Raw sentiment response: %s", raw_content)
 
     # Step 4: Parse and validate
     sentiment = _parse_sentiment_response(raw_content)

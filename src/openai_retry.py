@@ -107,23 +107,22 @@ def chat_completions_with_retry(
 
             if not _is_retryable(exc):
                 logger.warning(
-                    "OpenAI call failed with non-retryable error: %s", exc,
+                    "Processing failed with non-retryable error: %s", exc,
                 )
                 raise
 
             if attempt < MAX_RETRIES:
-                logger.warning(
-                    "OpenAI call failed (attempt %d/%d): %s — retrying in %.1fs",
+                logger.info(
+                    "Processing data and extracting information (attempt %d/%d) — retrying in %.1fs",
                     attempt + 1,
                     MAX_RETRIES + 1,
-                    exc,
                     delay,
                 )
                 time.sleep(delay)
                 delay = min(delay * BACKOFF_FACTOR, MAX_DELAY)
             else:
                 logger.error(
-                    "OpenAI call failed after %d attempts: %s",
+                    "Processing failed after %d attempts: %s",
                     MAX_RETRIES + 1,
                     exc,
                 )

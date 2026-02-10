@@ -177,7 +177,7 @@ def _parse_intent_response(raw: str) -> dict[str, Any]:
     try:
         parsed = json.loads(raw.strip())
     except json.JSONDecodeError as exc:
-        raise ValueError(f"OpenAI response is not valid JSON: {raw!r}") from exc
+        raise ValueError(f"Intent response is not valid JSON: {raw!r}") from exc
 
     if not isinstance(parsed, dict):
         raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
@@ -269,7 +269,7 @@ def classify_intent(
     user_message = _build_user_message(customer_texts)
 
     logger.info(
-        "Classifying intent for %d CUSTOMER utterance(s) via OpenAI.",
+        "Classifying intent for %d CUSTOMER utterance(s).",
         len(customer_texts),
     )
 
@@ -289,7 +289,7 @@ def classify_intent(
 
     raw_content = response.choices[0].message.content or ""
 
-    logger.debug("OpenAI raw intent response: %s", raw_content)
+    logger.debug("Raw intent response: %s", raw_content)
 
     # Step 4: Parse and validate
     intent = _parse_intent_response(raw_content)

@@ -342,7 +342,7 @@ def _call_openai(user_message: str) -> str:
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        raise EnvironmentError("OPENAI_API_KEY not set")
+        raise EnvironmentError("Summary generation API key not set")
 
     client = OpenAI(api_key=api_key)
 
@@ -359,7 +359,7 @@ def _call_openai(user_message: str) -> str:
 
     content = response.choices[0].message.content
     if not content:
-        raise ValueError("OpenAI returned empty response")
+        raise ValueError("Summary generation returned empty response")
 
     return content.strip()
 
@@ -503,12 +503,12 @@ def generate_summary(
         raw_summary = _call_openai(user_message)
         summary = _validate_summary(raw_summary)
 
-        logger.info("OpenAI summary generated: %s", summary)
+        logger.info("Summary generation complete: %s", summary)
         return summary
 
     except Exception as exc:
         logger.warning(
-            "OpenAI summary generation failed (%s), "
+            "Summary generation failed (%s), "
             "falling back to template-based summary",
             exc,
         )

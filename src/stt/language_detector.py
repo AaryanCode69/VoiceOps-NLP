@@ -34,7 +34,6 @@ from openai import OpenAI
 load_dotenv()
 
 logger = logging.getLogger("voiceops.stt.language_detector")
-logging.getLogger("openai._base_client").setLevel(logging.WARNING)
 
 # If audio is >= this duration, only send the first DETECTION_CLIP_SECONDS
 # to Whisper for language detection (saves time and cost).
@@ -117,7 +116,7 @@ def detect_language(audio_bytes: bytes) -> LanguageDetectionResult:
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY environment variable is not set.")
+        raise RuntimeError("Language detection API key is not set.")
 
     client = OpenAI(api_key=api_key)
 

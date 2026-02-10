@@ -20,6 +20,20 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+# Suppress OpenAI SDK internal HTTP/transport logs so they never appear
+# in pipeline output — only phase-specific logs are shown.
+for _openai_logger_name in (
+    "openai",
+    "openai._base_client",
+    "openai._client",
+    "openai.api_requestor",
+    "httpx",
+    "httpcore",
+    "httpcore.http11",
+    "httpcore.connection",
+):
+    logging.getLogger(_openai_logger_name).setLevel(logging.CRITICAL)
+
 from src.api.upload import app  # noqa: F401, E402
 
 if __name__ == "__main__":

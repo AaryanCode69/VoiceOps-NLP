@@ -132,7 +132,7 @@ def _parse_contradiction_response(raw: str) -> bool:
     try:
         parsed = json.loads(raw.strip())
     except json.JSONDecodeError as exc:
-        raise ValueError(f"OpenAI response is not valid JSON: {raw!r}") from exc
+        raise ValueError(f"Contradiction response is not valid JSON: {raw!r}") from exc
 
     if not isinstance(parsed, dict):
         raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
@@ -197,7 +197,7 @@ def detect_contradictions(
     user_message = _build_user_message(customer_texts)
 
     logger.info(
-        "Detecting contradictions across %d CUSTOMER utterance(s) via OpenAI.",
+        "Detecting contradictions across %d CUSTOMER utterance(s).",
         len(customer_texts),
     )
 
@@ -217,7 +217,7 @@ def detect_contradictions(
 
     raw_content = response.choices[0].message.content or ""
 
-    logger.debug("OpenAI raw contradiction response: %s", raw_content)
+    logger.debug("Raw contradiction response: %s", raw_content)
 
     # Step 4: Parse and validate
     result = _parse_contradiction_response(raw_content)
