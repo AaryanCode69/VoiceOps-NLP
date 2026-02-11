@@ -4,7 +4,7 @@ src/api/upload.py
 API Upload Endpoint — VoiceOps Full Pipeline (Phase 1 → Phase 8)
 
 Responsibility:
-    - Expose POST /analyze-call
+    - Expose POST /api/v1/analyze-call
     - Accept a single audio file (.wav, .mp3, or .m4a) via multipart/form-data
     - Reject requests missing an audio file
     - Reject disallowed file types
@@ -27,7 +27,7 @@ import logging
 import os
 
 import aiohttp
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, Request, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -64,7 +64,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 
-@app.post("/analyze-call")
+@app.post("/api/v1/analyze-call")
 async def analyze_call(audio_file: UploadFile = File(...)):
     """
     Accept an audio file and run the full VoiceOps pipeline
@@ -122,6 +122,7 @@ async def analyze_call(audio_file: UploadFile = File(...)):
     logger.info("Full pipeline complete — returning final structured JSON.")
 
     # POST final JSON to the configured webhook endpoint
+    webhook_response = None
     if WEBHOOK_URL:
         try:
             async with aiohttp.ClientSession() as session:
@@ -134,9 +135,16 @@ async def analyze_call(audio_file: UploadFile = File(...)):
                     logger.info(
                         "Webhook POST to %s — status %d", WEBHOOK_URL, resp.status,
                     )
+                    try:
+                        webhook_response = await resp.json()
+                    except Exception:
+                        logger.warning("Webhook did not return valid JSON (status %d), skipping.", resp.status)
         except Exception as exc:
             logger.error("Webhook POST failed: %s", exc)
     else:
         logger.debug("WEBHOOK_URL not configured — skipping POST.")
+
+    if webhook_response is not None:
+        return JSONResponse(status_code=200, content=webhook_response)
 
     return JSONResponse(status_code=200, content=final_output)

@@ -1,0 +1,13 @@
+{
+  "node": "n8n-nodes-voiceops.riskAnalyzer",
+  "nodeVersion": "1.0",
+  "codexVersion": "1.0",
+  "categories": ["Transform"],
+  "resources": {
+    "primaryDocumentation": [
+      {
+        "url": "https://docs.voiceops.com/risk-analyzer"
+      }
+    ]
+  }
+}
