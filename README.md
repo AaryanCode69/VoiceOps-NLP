@@ -1,302 +1,290 @@
+Here is the comprehensive README for the entire VoiceOps ecosystem. It unifies the **NLP Signal Engine** (Audio Processing) and the **RAG Intelligence Engine** (Reasoning & Storage) into a single, cohesive documentation structure.
+
+---
+
 # VoiceOps — Call-Centric Risk & Fraud Intelligence
 
 > VoiceOps analyzes financial calls in real time to detect unreliable commitments and fraud-like patterns, grounding explainable risk signals against known knowledge using RAG.
 
-## Rag Pipeline [![GitHub](https://img.shields.io/badge/-GitHub-181717?logo=github&logoColor=white)](https://github.com/raghavvag/VoiceOPs_Rag_Pipeline)
-https://github.com/raghavvag/VoiceOPs_Rag_Pipeline
+## Rag Pipeline [](https://github.com/raghavvag/VoiceOPs_Rag_Pipeline)
 
-## Frontend [![GitHub](https://img.shields.io/badge/-GitHub-181717?logo=github&logoColor=white)](https://github.com/kriti11m/VoiceOps_frontend.git)
-https://github.com/kriti11m/VoiceOps_frontend.git
+[https://github.com/raghavvag/VoiceOPs_Rag_Pipeline](https://github.com/raghavvag/VoiceOPs_Rag_Pipeline)
 
-## Project Structure
+## Frontend [](https://github.com/kriti11m/VoiceOps_frontend.git)
+
+[https://github.com/kriti11m/VoiceOps_frontend.git](https://github.com/kriti11m/VoiceOps_frontend.git)
+
+---
+
+<p align="center">
+<img src="[https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)" />
+<img src="[https://img.shields.io/badge/FastAPI-0.115-009688?style=for-the-badge&logo=fastapi&logoColor=white](https://img.shields.io/badge/FastAPI-0.115-009688?style=for-the-badge&logo=fastapi&logoColor=white)" />
+<img src="[https://img.shields.io/badge/OpenAI-GPT--4o-412991?style=for-the-badge&logo=openai&logoColor=white](https://img.shields.io/badge/OpenAI-GPT--4o-412991?style=for-the-badge&logo=openai&logoColor=white)" />
+<img src="[https://img.shields.io/badge/Supabase-pgvector-3FCF8E?style=for-the-badge&logo=supabase&logoColor=white](https://img.shields.io/badge/Supabase-pgvector-3FCF8E?style=for-the-badge&logo=supabase&logoColor=white)" />
+<img src="[https://img.shields.io/badge/Sarvam_AI-Indian_Lang-FF6B6B?style=for-the-badge](https://www.google.com/search?q=https://img.shields.io/badge/Sarvam_AI-Indian_Lang-FF6B6B%3Fstyle%3Dfor-the-badge)" />
+</p>
+
+<h1 align="center">🎙️ VoiceOps System Architecture</h1>
+
+VoiceOps is a dual-engine platform designed for financial compliance and risk detection. It consists of two major subsystems:
+
+1. **NLP Signal Engine:** Processes raw audio, handles diarization, redacts PII, and extracts deterministic risk signals.
+2. **RAG Intelligence Engine:** Ingests signals, retrieves fraud patterns/compliance rules, and generates grounded, auditor-friendly reasoning.
+
+---
+
+## 🏗️ High-Level System Architecture
+
+```mermaid
+graph TD
+    User[Agent/System] -->|Upload Audio .wav/.mp3| API[NLP Engine API]
+    
+    subgraph "NLP Signal Engine (Phases 1-8)"
+        API --> Norm[Audio Normalizer]
+        Norm --> Route{Language Router}
+        Route -->|Indian Langs| Sarvam[Sarvam AI STT]
+        Route -->|Global| Whisper[OpenAI Whisper]
+        Sarvam & Whisper --> Diar[Speaker Diarization]
+        Diar --> PII[PII Redaction]
+        PII --> NLP[NLP Extraction]
+        NLP --> Risk[Deterministic Risk Scorer]
+        Risk --> Sum[Summary Generator]
+    end
+    
+    subgraph "RAG Intelligence Engine"
+        Sum --> Vector[Vector Embedding]
+        Vector --> Search{pgvector Search}
+        Search -->|Retrieve| KB[Knowledge Base]
+        KB --> Context[Context Builder]
+        Context --> LLM[GPT-4o Reasoning]
+        LLM --> Audit[Backboard AI Audit Trail]
+        LLM --> DB[(Supabase Storage)]
+    end
+    
+    DB --> Dashboard[Frontend Dashboard]
+    DB --> Chat[RAG Chatbot]
+    DB --> PDF[PDF Reports]
 
 ```
-docs/
-  RULES.md              # Non-negotiable system rules (locked)
-src/
-  api/                  # API layer — POST /analyze-call endpoint
-  audio/                # Audio normalization and format validation
-  stt/                  # Speech-to-text with provider selection (Sarvam AI / Whisper)
-  nlp/                  # NLP extraction: intent, sentiment, obligations, contradictions, PII redaction
-  risk/                 # Risk & fraud signal engine (multi-signal scoring)
-  rag/                  # RAG grounding layer (knowledge-based explanations)
-  schemas/              # Locked JSON output schema definitions
-```
 
-## Current Phase
+---
 
-**Phase 8** — RAG summary generation.
+## 🛠 Tech Stack
 
-### What Phase 1 implements
+### NLP & Audio Processing
 
-| File | Purpose |
-|---|---|
-| `src/api/upload.py` | `POST /analyze-call` — accepts `.wav` / `.mp3` via multipart upload |
-| `src/audio/normalizer.py` | Validates format, duration, emptiness; converts to mono 16 kHz WAV |
+* **Audio:** `ffmpeg`, `pydub`, `pyannote.audio` (Speaker Diarization)
+* **STT:** OpenAI Whisper (Global), Sarvam AI `saaras:v2` (Indian Regional)
+* **NLP:** `spacy`, OpenAI `gpt-4o-mini` (Extraction)
+* **Safety:** Local Regex PII Redaction (Zero-trust)
 
-### What Phase 2 implements
+### RAG & Infrastructure
 
-| File | Purpose |
-|---|---|
-| `src/stt/language_detector.py` | Detects spoken language via OpenAI Whisper API; classifies Indian vs non-Indian |
-| `src/stt/router.py` | Orchestrates the Phase 2 pipeline: detect → route → transcribe → diarize |
-| `src/stt/whisper_client.py` | OpenAI Whisper API client for non-Indian language transcription |
-| `src/stt/sarvam_client.py` | Sarvam AI API client for Hindi / Hinglish / Indian regional language transcription |
-| `src/stt/diarizer.py` | Speaker diarization via pyannote.audio; merges transcript with AGENT / CUSTOMER labels |
+* **Framework:** FastAPI 0.115.6
+* **Database:** Supabase (PostgreSQL + pgvector)
+* **LLM:** OpenAI GPT-4o / GPT-4o-mini
+* **Embeddings:** `text-embedding-3-small` (1536-dim)
+* **Memory/Audit:** Backboard AI
+* **Reporting:** `fpdf2` for PDF generation
 
-### What Phase 3 implements
+---
 
-| File | Purpose |
-|---|---|
-| `src/stt/diarizer_validator.py` | Validates raw diarized transcript: checks speaker labels, timestamps, and text; normalizes labels to AGENT / CUSTOMER |
-| `src/stt/utterance_structurer.py` | Merges consecutive same-speaker fragments, drops artifacts, and produces clean ordered utterance list |
+## 🧩 Part 1: The NLP Signal Engine
 
-### Phase 3 — Diarization Guarantees
+**Goal:** Convert raw audio into structured, safe, and scored JSON data.
 
-After Phase 3 processing, the utterance list satisfies the following invariants:
+### Pipeline Phases
 
-- **Every utterance has a valid speaker label** — only `"AGENT"` or `"CUSTOMER"` (per RULES.md §5)
-- **Utterances are chronologically ordered** by `start_time`
-- **No empty or null text** — all text fields are non-empty after whitespace stripping
-- **No invalid timestamps** — `start_time >= 0` and `end_time > start_time` for every utterance
-- **Diarization artifacts are cleaned** — consecutive same-speaker fragments separated by ≤ 0.3s are merged; extremely short fragments with no meaningful text are dropped
-- **AGENT utterances are preserved** — no speaker's utterances are discarded
-- **Text content is NOT modified semantically** — only whitespace-trimmed and concatenated during merges
-- **No NLP, scoring, PII redaction, or identifiers** are present in the output
+| Phase | Component | Functionality |
+| --- | --- | --- |
+| **1** | **Upload & Norm** | Validates `.wav`/`.mp3`, converts to mono 16kHz. |
+| **2** | **STT Routing** | Detects language. Routes **Hindi/Regional** to Sarvam AI, others to Whisper. |
+| **3** | **Diarization** | Separates `AGENT` vs `CUSTOMER`. Merges fragments. **Guarantee:** Timestamps are chronological. |
+| **4** | **PII Redaction** | **Mandatory Safety Layer.** Redacts Credit Cards, Aadhaar, OTPs, Phones locally. |
+| **5** | **Sentiment** | Classifies customer emotion (stressed, evasive) in financial context. |
+| **6** | **Intent/Logic** | Extracts `repayment_promise`, `refusal`, and detects contradictions. |
+| **7** | **Risk Scoring** | **Deterministic Scorer.** Calculates 0-100 risk score based on weighted signals. |
+| **8** | **Summarization** | Generates a safe, single-sentence summary for RAG embedding. |
 
-### What Phase 4 implements
+### Key Guarantees
 
-| File | Purpose |
-|---|---|
-| `src/nlp/normalizer.py` | Removes filler words, normalizes spoken contractions to written form, collapses whitespace — without altering semantic meaning |
-| `src/nlp/pii_redactor.py` | Detects and redacts credit/debit cards, bank accounts, Aadhaar/SSN, OTPs, phone numbers, and emails with safe tokens |
-| `src/nlp/__init__.py` | Exposes `normalize_and_redact()` — the Phase 4 pipeline entry point (normalize → redact) |
+1. **Zero Raw PII:** No PII ever leaves Phase 4.
+2. **Deterministic Scoring:** Risk scores are math-based, not LLM-hallucinated.
+3. **Indian Language Support:** First-class support for Hinglish, Tamil, Telugu via Sarvam.
 
-### Phase 4 — PII Safety Guarantees
-
-After Phase 4 processing, the utterance list satisfies the following invariants:
-
-- **No raw PII in output** — all detected PII is replaced with redaction tokens before any downstream use
-- **Redaction tokens used:** `<CREDIT_CARD>`, `<BANK_ACCOUNT>`, `<GOVT_ID>`, `<OTP>`, `<PHONE_NUMBER>`, `<EMAIL>`
-- **Redaction is mandatory** — per RULES.md §7, no raw PII may appear in transcripts, summaries, embeddings, or RAG inputs
-- **Text normalization preserves meaning** — only filler words (uh, um, hmm) are removed and spoken forms (gonna → going to) are expanded; no semantic distortion
-- **Speaker labels and timestamps are unchanged** — only the `text` field is modified
-- **No utterances are dropped or added** — every Phase 3 utterance passes through
-- **Output is deterministic** — same input always produces same output
-- **No external API calls** — all processing is local regex-based pattern matching
-- **No downstream logic** — no intent, sentiment, risk, scores, or identifiers are introduced
-
-### What Phase 5 implements
-
-| File | Purpose |
-|---|---|
-| `src/nlp/sentiment.py` | Classifies financial-context sentiment from CUSTOMER utterances using OpenAI API; returns label + confidence |
-
-### Phase 5 — Sentiment Scope & Limitations
-
-- **CUSTOMER utterances only** — AGENT speech is never analyzed for sentiment (per RULES.md §5)
-- **Input must be Phase 4 output** — utterances must be normalized and PII-redacted before sentiment analysis
-- **Financial context** — sentiment is classified in the context of financial calls (debt, payments, obligations), not general conversation
-- **Allowed labels:** `calm`, `neutral`, `stressed`, `anxious`, `frustrated`, `evasive` — no other labels are produced
-- **Confidence score:** 0.0–1.0 float representing classifier certainty
-- **OpenAI API required** — uses `gpt-4o-mini` with `temperature=0.0` for deterministic output
-- **No fallback logic** — if OpenAI is unavailable, the call fails (no local heuristic)
-- **Default behavior:** if no CUSTOMER utterances exist, returns `{"label": "neutral", "confidence": 0.0}`
-- **No downstream logic** — no intent, risk, fraud scores, summaries, or identifiers are produced
-
-### Phase 5 — Output Format
-
-```json
-{
-  "label": "stressed",
-  "confidence": 0.82
-}
-```
-
-### What Phase 6 implements
-
-| File | Purpose |
-|---|---|
-| `src/nlp/intent.py` | Classifies customer intent in a financial context using OpenAI API; returns label + confidence + conditionality |
-| `src/nlp/obligation.py` | Derives obligation strength deterministically from intent label, conditionality, and linguistic markers — no LLM |
-| `src/nlp/contradictions.py` | Detects within-call contradictions in CUSTOMER speech using OpenAI API; returns boolean |
-
-### Phase 6 — Scope & Limitations
-
-- **CUSTOMER utterances only** — AGENT speech is never analyzed (per RULES.md §5)
-- **Input must be Phase 4 output** — utterances must be normalized and PII-redacted
-- **Intent labels (enum):** `repayment_promise`, `repayment_delay`, `refusal`, `deflection`, `information_seeking`, `dispute`, `unknown` — no other labels are produced
-- **Conditionality levels:** `low`, `medium`, `high`
-- **Confidence score:** 0.0–1.0 float
-- **Obligation strength:** `strong`, `weak`, `conditional`, `none` — derived deterministically from intent + conditionality + linguistic markers
-- **Contradiction detection:** binary true/false for within-call inconsistencies only; requires ≥2 CUSTOMER utterances
-- **OpenAI API required** — intent and contradiction detection use `gpt-4o-mini` with `temperature=0.0`
-- **No downstream logic** — no risk scores, fraud likelihood, summaries, explanations, or identifiers are produced
-- **No sentiment** — sentiment is handled by Phase 5; Phase 6 does not re-analyze it
-
-### Phase 6 — Output Format
-
-```json
-{
-  "intent": {
-    "label": "repayment_delay",
-    "confidence": 0.85,
-    "conditionality": "medium"
-  },
-  "obligation_strength": "conditional",
-  "contradictions_detected": false
-}
-```
-
-### What Phase 7 implements
-
-| File | Purpose |
-|---|---|
-| `src/risk/signals.py` | Defines typed signal structures for all risk inputs; validates and bundles upstream outputs (sentiment, intent, obligation, contradictions, audio trust) |
-| `src/risk/scorer.py` | Deterministic weighted risk scorer — computes risk score (0–100), fraud likelihood, confidence, and key contributing risk factors |
-
-### Phase 7 — Risk Scoring Philosophy
-
-- **Multi-signal aggregation** — Risk is computed from six independent signal dimensions: sentiment, intent, conditionality, obligation strength, contradictions, and audio trust. No single factor can dominate the risk score alone.
-- **Deterministic** — No LLMs, no randomness, no probabilistic sampling. Same inputs always produce identical outputs.
-- **Transparent weighting** — Each signal dimension has a configurable weight (default weights sum to 1.0). Sub-scores are computed independently in [0, 100] and combined via weighted sum.
-- **Threshold-based fraud classification** — Fraud likelihood is derived from fixed score thresholds: `high` (≥65), `medium` (≥35), `low` (<35). Thresholds are configurable.
-- **Traceable risk factors** — Each flagged risk factor maps directly to an input signal dimension that exceeded a sub-score threshold, ensuring every factor is explainable from the inputs.
-- **No downstream logic** — Phase 7 does not generate explanations, summaries, or identifiers. It does not call RAG, store data, or make business decisions.
-
-### Phase 7 — Signal Dimensions & Weights
-
-| Dimension | Weight | What it measures |
-|---|---|---|
-| Sentiment | 0.20 | Emotional risk from customer sentiment (evasive/stressed = high) |
-| Intent | 0.20 | Risk inherent in the classified intent (refusal/deflection = high) |
-| Conditionality | 0.15 | How hedged or conditional the customer's statements are |
-| Obligation | 0.15 | Strength of customer's commitment (none/conditional = high risk) |
-| Contradictions | 0.15 | Whether within-call contradictions were detected |
-| Audio trust | 0.15 | Audio quality signals (suspicious naturalness = high risk) |
-
-### Phase 7 — Output Format
+### API Output (The Input for RAG)
 
 ```json
 {
   "risk_score": 78,
   "fraud_likelihood": "high",
-  "confidence": 0.81,
-  "key_risk_factors": [
-    "conditional_commitment",
-    "contradictory_statements",
-    "high_emotional_stress"
-  ]
+  "key_risk_factors": ["conditional_commitment", "contradictory_statements"],
+  "summary_for_rag": "Customer expressed a request to delay repayment with conditional commitment...",
+  "transcript": [...]
 }
-```
-
-### What Phase 8 implements
-
-| File | Purpose |
-|---|---|
-| `src/rag/summary_generator.py` | Generates a single-sentence, embedding-safe summary from Phase 6 + Phase 7 structured outputs; OpenAI with deterministic template fallback |
-
-### Phase 8 — Summary Generation for RAG
-
-- **Input:** Structured outputs only — intent label, conditionality, obligation strength, contradictions (Phase 6) and risk score, fraud likelihood, key risk factors (Phase 7)
-- **Output:** Exactly one sentence suitable for semantic embedding
-- **No raw transcript:** Summary is derived exclusively from structured signals, never from raw text
-- **OpenAI usage:** `gpt-4o-mini` with `temperature=0.0`, constrained prompt enforcing neutral language, one sentence, no new facts
-- **Deterministic fallback:** If OpenAI is unavailable or returns invalid output, a template-based summary is generated deterministically
-- **Summary constraints:** No PII, no identifiers, no numeric scores, no accusatory language, no recommendations
-- **Banned words:** "fraudster", "lied", "scam", "criminal", "guilty", "dishonest", etc. are never used
-- **Deterministic:** Same structured inputs always produce identical template-based output
-- **No downstream logic:** Phase 8 does not store data, call RAG, embed, or generate identifiers
-
-### Phase 8 — Output Format
-
-A single string:
 
 ```
-"Customer expressed a request to delay repayment with conditional commitment, showing moderate conditionality and conditional commitment patterns, indicating moderate risk and warranting closer attention."
+
+---
+
+## 🧠 Part 2: The RAG Intelligence Engine
+
+**Goal:** Ground the NLP signals against legal/fraud knowledge and generate explainable audits.
+
+### Core RAG Workflow (10 Steps)
+
+The pipeline executes these steps for every analyzed call:
+
+1. **Validate Payload:** Accepts output from NLP Engine.
+2. **Store Record:** Creates entry in `call_analyses` (Supabase).
+3. **Embed Summary:** Converts Phase 8 summary to 1536-dim vector.
+4. **Retrieve Knowledge:** Searches 3 distinct knowledge categories:
+* *Fraud Patterns* (Top 3)
+* *Compliance Rules* (Top 2)
+* *Risk Heuristics* (Top 2)
+
+
+5. **Build Context:** Combines Call Signals + Matched Knowledge.
+* *Audit:* Logs context to **Backboard AI** for traceability.
+
+
+6. **Grounded Reasoning:** GPT-4o generates assessment.
+* *Constraint:* Must cite specific knowledge patterns (e.g., `[fp_001]`).
+
+
+7. **Store Output:** Updates database with reasoning.
+8. **Status Assignment:** Sets `escalated` or `resolved` based on score.
+9. **Document Extraction:** Extracts structured entities (Commitments, EMI dates) for the PDF report.
+10. **Final Response:** Returns complete analysis package.
+
+### Knowledge Base Architecture
+
+The system uses `pgvector` for similarity search.
+
+| Category | Description | Example |
+| --- | --- | --- |
+| **Fraud Pattern** | Known deceptive behaviors | `[fp_001]` Conditional Promise with Contradiction |
+| **Compliance** | Regulatory guidelines | `[cr_005]` RBI Fair Practices Code |
+| **Heuristics** | Statistical risk indicators | `[rh_002]` High stress + Evasive intent correlation |
+
+### Chatbot System
+
+A RAG-powered chatbot allows auditors to query the call data.
+
+* **Temporal Queries:** "Show me calls from last week."
+* **Pattern Queries:** "Which calls matched the 'Third-Party Impersonation' pattern?"
+
+---
+
+## 📂 Project Structure
+
+```
+.
+├── nlp_engine/               # The Signal Processing Pipeline
+│   ├── src/
+│   │   ├── audio/            # Normalization
+│   │   ├── stt/              # Whisper & Sarvam Clients
+│   │   ├── nlp/              # PII, Sentiment, Intent
+│   │   └── risk/             # Deterministic Scorer
+│   └── docs/RULES.md         # Non-negotiable system rules
+│
+├── rag_pipeline/             # The Intelligence Pipeline
+│   ├── app/
+│   │   ├── services/         # Embedding, Retrieval, Backboard AI
+│   │   └── db/               # Supabase & pgvector queries
+│   ├── knowledge/            # JSON definitions of Fraud Patterns
+│   └── sql/                  # Database migration scripts
+│
+└── frontend/                 # Next.js Dashboard
+
 ```
 
-### STT Routing Logic (per RULES.md §4)
+---
+
+## 🚀 Setup & Installation
+
+### Prerequisites
+
+* Python 3.11+
+* FFmpeg (for audio processing)
+* Supabase Account (with `pgvector` enabled)
+* OpenAI API Key & Sarvam AI API Key
+
+### 1. Environment Configuration
+
+Create a `.env` file covering both engines:
+
+```env
+# --- NLP Engine ---
+OPENAI_API_KEY=sk-...
+SARVAM_API_KEY=...
+HF_AUTH_TOKEN=...       # For pyannote.audio
+
+# --- RAG Engine ---
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your-service-role-key
+EMBEDDING_MODEL=text-embedding-3-small
+BACKBOARD_API_KEY=...
 
 ```
-Audio (normalized, mono 16 kHz WAV)
-  │
-  ▼
-Language Detection (OpenAI Whisper API)
-  │
-  ├── Detected language ∈ {Hindi, Hinglish, Indian regional}
-  │     → Sarvam AI STT (saaras:v2)
-  │
-  └── All other languages
-        → OpenAI Whisper STT
-  │
-  ▼
-Speaker Diarization (pyannote.audio)
-  │
-  ▼
-Raw Diarized Transcript
-  [{ speaker: AGENT|CUSTOMER, text, start_time, end_time }]
-```
 
-**Indian languages routed to Sarvam AI:** Hindi (hi), Marathi (mr), Tamil (ta), Telugu (te), Kannada (kn), Malayalam (ml), Gujarati (gu), Punjabi (pa), Bengali (bn), Odia (or), Assamese (as), Urdu (ur), Nepali (ne), Sanskrit (sa), Sindhi (sd), Sinhala (si).
+### 2. Database Initialization (RAG)
 
-### Environment Variables (Phase 2)
+Run the SQL scripts in `rag_pipeline/sql/` in your Supabase SQL Editor:
 
-| Variable | Required for |
-|---|---|
-| `OPENAI_API_KEY` | Language detection + Whisper STT |
-| `SARVAM_API_KEY` | Sarvam AI STT (Indian languages only) |
-| `HF_AUTH_TOKEN` | pyannote.audio speaker diarization (HuggingFace) |
+1. `init.sql`: Creates tables and RPC functions.
+2. `migrate_chatbot.sql`: Enables chat vector search.
 
-### API Endpoint
+### 3. Knowledge Seeding
 
-```
-POST /analyze-call
-Content-Type: multipart/form-data
-
-audio_file = <.wav | .mp3>
-```
-
-**Response (Phase 2 — raw diarized transcript):**
-
-```json
-{
-  "status": "transcription_complete",
-  "transcript": [
-    {
-      "speaker": "AGENT",
-      "text": "You have an outstanding payment",
-      "start_time": 0.0,
-      "end_time": 3.2
-    },
-    {
-      "speaker": "CUSTOMER",
-      "text": "Salary late aaya hai, next week pay kar dunga",
-      "start_time": 3.3,
-      "end_time": 8.1
-    }
-  ]
-}
-```
-
-### Running the server
+Populate the vector database with the definitions:
 
 ```bash
-pip install -r requirements.txt
-uvicorn main:app --reload
+curl -X POST http://localhost:8000/api/v1/knowledge/seed
+
 ```
 
-> **Note:** `pydub` requires FFmpeg installed on the system. `pyannote.audio` requires a HuggingFace auth token (`HF_AUTH_TOKEN`).
+### 4. Running the Services
 
-## Pipeline Order (per RULES.md §6)
+**Start the NLP Engine:**
 
-1. **Audio normalization** ← Phase 1 (implemented)
-2. **STT + speaker diarization** ← Phase 2 (implemented)
-3. **Diarization validation + utterance structuring** ← Phase 3 (implemented)
-4. **Text cleanup & normalization** ← Phase 4 (implemented)
-5. **PII redaction (mandatory)** ← Phase 4 (implemented)
-6. **Financial NLP extraction (sentiment)** ← Phase 5 (implemented)
-7. **Financial NLP extraction (intent, obligations, contradictions)** ← Phase 6 (implemented)
-8. **Risk & fraud signal computation** ← Phase 7 (implemented)
-9. **Summary generation** ← Phase 8 (implemented)
-10. Structured JSON output to RAG
+```bash
+cd nlp_engine
+pip install -r requirements.txt
+uvicorn main:app --port 8001
+
+```
+
+**Start the RAG Engine:**
+
+```bash
+cd rag_pipeline
+pip install -r requirements.txt
+uvicorn main:app --port 8000
+
+```
+
+---
+
+## 📊 Example Workflow
+
+1. **Input:** An audio file of a debt collection call in Hindi mixed with English.
+2. **NLP Processing:**
+* Detects "Hinglish".
+* Transcribes: *"Haan main pay kar dunga but salary late hai"* (Customer).
+* Scores Risk: **72/100** (High Conditionality).
+
+
+3. **RAG Processing:**
+* Embeds summary.
+* Retrieves pattern `[fp_001] Conditional Promise`.
+* LLM concludes: *"High risk. Customer language matches pattern fp_001. Contradiction detected between promise and ability."*
+
+
+4. **Output:** A PDF report is generated with the transcript, risk score, and specific regulatory flags.
+
+---
+
+<p align="center">
+Built for <strong>DevSoc'26</strong>
+</p>
